@@ -104,8 +104,6 @@ nba/
 │       ├── boxscore.py   # Game box score
 │       ├── colors.py     # Team colors
 │       └── helpers.py    # UI helpers
-├── docs/
-│   └── MELHORIAS.md   # Improvement backlog
 ├── tests/
 ├── requirements.txt
 ├── CHANGELOG.md
