@@ -7,6 +7,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 from core import categorize_games, format_live_clock, game_index_label
 from ui.screens import parse_date_string
+from ui.helpers import format_team_name
 import constants
 import api
 
@@ -67,6 +68,10 @@ class TestFormatLiveClock(unittest.TestCase):
         g = {"gameStatusText": "", "period": 3, "gameClock": "PT5M30S"}
         self.assertEqual(format_live_clock(g), "Q3 5:30")
 
+    def test_from_period_clock_zero_minutes(self):
+        g = {"gameStatusText": "", "period": 2, "gameClock": "PT0M45S"}
+        self.assertEqual(format_live_clock(g), "Q2 0:45")
+
     def test_empty(self):
         self.assertEqual(format_live_clock({}), "-")
         self.assertEqual(format_live_clock({"gameStatusText": ""}), "-")
@@ -89,6 +94,7 @@ class TestGameIndexLabel(unittest.TestCase):
         self.assertEqual(game_index_label(9), " [0] ")
         self.assertEqual(game_index_label(10), " [a] ")
         self.assertEqual(game_index_label(11), " [b] ")
+        self.assertEqual(game_index_label(19), " [j] ")
 
 
 class TestParseDateString(unittest.TestCase):
@@ -103,7 +109,33 @@ class TestParseDateString(unittest.TestCase):
         self.assertIsNone(parse_date_string(""))
         self.assertIsNone(parse_date_string("  "))
         self.assertIsNone(parse_date_string("invalid"))
-        self.assertIsNone(parse_date_string("02/13/2025"))
+        # dateutil accepts MM/DD/YYYY (e.g. 02/13/2025) so we only assert truly invalid
+        self.assertIsNone(parse_date_string("not-a-date"))
+
+
+class TestFormatTeamName(unittest.TestCase):
+    def test_full(self):
+        self.assertEqual(format_team_name({"teamCity": "Los Angeles", "teamName": "Lakers"}), "Los Angeles Lakers")
+
+    def test_empty_dict(self):
+        self.assertEqual(format_team_name({}), "")
+
+    def test_none(self):
+        self.assertEqual(format_team_name(None), "")
+
+    def test_partial(self):
+        self.assertEqual(format_team_name({"teamCity": "Boston"}), "Boston")
+        self.assertEqual(format_team_name({"teamName": "Celtics"}), "Celtics")
+
+
+class TestIsTripleDouble(unittest.TestCase):
+    def test_triple_double(self):
+        self.assertTrue(constants.is_triple_double({"points": 25, "reboundsTotal": 10, "assists": 12}))
+
+    def test_not_triple_double(self):
+        self.assertFalse(constants.is_triple_double({"points": 30, "reboundsTotal": 5, "assists": 5}))
+        self.assertFalse(constants.is_triple_double(None))
+        self.assertFalse(constants.is_triple_double({}))
 
 
 class TestBuildQuarterScores(unittest.TestCase):

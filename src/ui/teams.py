@@ -1,4 +1,4 @@
-"""Seleção de times e página do time: roster, líderes, próximos/últimos jogos."""
+"""Team selection and team page: roster, leaders, upcoming/last games."""
 import curses
 from collections import namedtuple
 from concurrent.futures import ThreadPoolExecutor
@@ -8,6 +8,7 @@ from dateutil import parser
 import config
 import constants
 from .helpers import safe_addstr, wait_key, format_team_name
+from . import player as player_ui
 from nba_api.stats.library.parameters import StatCategoryAbbreviation
 
 TeamRow = namedtuple("TeamRow", "tricode name rank wins losses")
@@ -79,7 +80,20 @@ def _load_team_page_data(api_client, team_id, tricode):
         past = fut_past.result()
         roster_df = fut_roster.result()
     roster_list = roster_df.to_dict("records") if roster_df is not None and not roster_df.empty else []
-    return info, leader_data, upcoming, past, roster_list
+    # Load head-to-head once (vs next opponent) to avoid API calls on every redraw
+    h2h = {}
+    if team_id and upcoming:
+        try:
+            date_str, g = upcoming[0]
+            away = g.get("awayTeam", {})
+            home = g.get("homeTeam", {})
+            opp_tricode = away.get("teamTricode") if tricode.upper() == home.get("teamTricode", "") else home.get("teamTricode")
+            opp_team_id = constants.TRICODE_TO_TEAM_ID.get(opp_tricode.upper()) if opp_tricode else None
+            if opp_team_id:
+                h2h = api_client.fetch_head_to_head(int(team_id), int(opp_team_id))
+        except (TypeError, ValueError):
+            pass
+    return info, leader_data, upcoming, past, roster_list, h2h
 
 
 def _draw_team_page_header(stdscr, tricode, team_name, cfg, color_ctx):
@@ -91,7 +105,17 @@ def _draw_team_page_header(stdscr, tricode, team_name, cfg, color_ctx):
 
 
 def _draw_team_season_section(draw, row, info):
-    df = info.team_info_common.get_data_frame() if info else None
+    df = None
+    if info is not None:
+        try:
+            if hasattr(info, "team_info_common") and hasattr(info.team_info_common, "get_data_frame"):
+                df = info.team_info_common.get_data_frame()
+            elif hasattr(info, "get_data_frames"):
+                dfs = info.get_data_frames()
+                if dfs and not dfs[0].empty:
+                    df = dfs[0]
+        except Exception:
+            pass
     if df is None or df.empty:
         return row
     r = df.iloc[0]
@@ -137,6 +161,36 @@ def _draw_team_roster_section(draw, row, max_row, roster_list, selected_roster_i
         if is_sel:
             attr = attr | curses.A_REVERSE
         draw(row, f"  #{num:<3} {pname:<28} {pos}", attr)
+        row += 1
+    return row + 2
+
+
+def _draw_team_head_to_head_section(draw, row, max_row, tricode, h2h, upcoming, cfg):
+    """Draw head-to-head vs next opponent (h2h is pre-fetched to avoid API calls on every redraw)."""
+    if row >= max_row or not upcoming or not h2h:
+        return row
+    date_str, g = upcoming[0]
+    away = g.get("awayTeam", {})
+    home = g.get("homeTeam", {})
+    opp_tricode = away.get("teamTricode") if tricode.upper() == home.get("teamTricode", "") else home.get("teamTricode")
+    if not opp_tricode:
+        return row
+    if not h2h.get("last_meeting") and not (h2h.get("season_series") or {}).get("games"):
+        return row
+    draw(row, " " + config.get_text(cfg, "head_to_head") + f" vs {opp_tricode} ", curses.A_BOLD | curses.A_REVERSE)
+    row += 1
+    ss = h2h.get("season_series") or {}
+    wins_a = ss.get("wins_a", 0) or 0
+    wins_b = ss.get("wins_b", 0) or 0
+    draw(row, f"  {config.get_text(cfg, 'season_series')}: {tricode} {wins_a}-{wins_b} {opp_tricode}")
+    row += 1
+    last = h2h.get("last_meeting") or {}
+    if last.get("date"):
+        pts_a, pts_b = last.get("pts_a"), last.get("pts_b")
+        if pts_a is not None and pts_b is not None:
+            draw(row, f"  {config.get_text(cfg, 'last_meeting')}: {last['date']}  {tricode} {pts_a}-{pts_b} {opp_tricode}")
+        else:
+            draw(row, f"  {config.get_text(cfg, 'last_meeting')}: {last['date']}  {last.get('matchup', '')}")
         row += 1
     return row + 2
 
@@ -209,45 +263,86 @@ def show_team_player_card(stdscr, player_name, num, position, team_name, tricode
     wait_key(stdscr)
 
 
+def _build_team_page_lines(width, max_lines, info, leader_data, roster_list, selected_roster_idx, top_3_names, tricode, h2h, upcoming, past, cfg):
+    """Build team page content as a list of (text, attr). Returns (lines, content_height)."""
+    lines = []
+
+    def draw(y, text, attr=0):
+        if y >= max_lines:
+            return
+        while len(lines) <= y:
+            lines.append(("", 0))
+        lines[y] = (text[: width - 1], attr)
+
+    row = _draw_team_season_section(draw, 0, info)
+    row = _draw_team_leaders_section(draw, row, max_lines, leader_data)
+    row = _draw_team_roster_section(draw, row, max_lines, roster_list, selected_roster_idx, top_3_names)
+    row = _draw_team_head_to_head_section(draw, row, max_lines, tricode, h2h, upcoming, cfg)
+    row = _draw_team_upcoming_section(draw, row, max_lines, upcoming)
+    row = _draw_team_past_section(draw, row, max_lines, past)
+    row = _draw_team_fun_fact_section(draw, row, max_lines, tricode, width)
+    return (lines, len(lines))
+
+
 def show_team_page(stdscr, tricode, team_name, cfg, color_ctx, api_client, team_id=None):
     team_id = team_id or constants.TRICODE_TO_TEAM_ID.get(tricode.upper())
     if not team_id:
         return
 
+    stdscr.clear()
     _draw_loading(stdscr, tricode, team_name, "Loading data")
     stdscr.refresh()
+    curses.doupdate()
 
-    info, leader_data, upcoming, past, roster_list = _load_team_page_data(api_client, team_id, tricode)
+    try:
+        info, leader_data, upcoming, past, roster_list, h2h = _load_team_page_data(api_client, team_id, tricode)
+    except Exception:
+        info, leader_data, upcoming, past, roster_list, h2h = None, {}, [], [], [], {}
+    if info is None and not roster_list:
+        try:
+            height, width = stdscr.getmaxyx()
+            stdscr.clear()
+            stdscr.addstr(height // 2 - 1, 0, " Failed to load team data. Press any key. "[: width - 1], curses.A_BOLD | curses.A_REVERSE)
+            stdscr.refresh()
+            wait_key(stdscr)
+        except curses.error:
+            pass
+        return
     selected_roster_idx = 0
     top_3_names = {name for col in ("PTS", "REB", "AST") if col in leader_data for name, _ in leader_data.get(col, [])}
+
+    scroll_offset = 0
+    max_content_lines = 800
 
     while True:
         stdscr.clear()
         height, width = stdscr.getmaxyx()
+        content_start = 2
+        view_height = height - content_start - 2
+        if view_height <= 0:
+            view_height = 1
+
         try:
             _draw_team_page_header(stdscr, tricode, team_name, cfg, color_ctx)
-            content_start = 2
-            max_row = height - content_start - 2
-
-            def draw(y, text, attr=0):
-                if y >= max_row:
-                    return
-                try:
-                    if attr:
-                        stdscr.attron(attr)
-                    stdscr.addstr(content_start + y, 0, text[: width - 1])
-                    if attr:
-                        stdscr.attroff(attr)
-                except curses.error:
-                    pass
-
-            row = _draw_team_season_section(draw, 0, info)
-            row = _draw_team_leaders_section(draw, row, max_row, leader_data)
-            row = _draw_team_roster_section(draw, row, max_row, roster_list, selected_roster_idx, top_3_names)
-            row = _draw_team_upcoming_section(draw, row, max_row, upcoming)
-            row = _draw_team_past_section(draw, row, max_row, past)
-            _draw_team_fun_fact_section(draw, row, max_row, tricode, width)
-            stdscr.addstr(height - 1, 0, " [up/down] Player  [Enter] View profile  [Q] Back "[: width - 1], curses.A_DIM)
+            content_lines, content_height = _build_team_page_lines(
+                width, max_content_lines, info, leader_data, roster_list, selected_roster_idx, top_3_names,
+                tricode, h2h, upcoming, past, cfg
+            )
+            scroll_offset = max(0, min(scroll_offset, max(0, content_height - view_height)))
+            for i in range(view_height):
+                idx = scroll_offset + i
+                if idx < content_height:
+                    text, attr = content_lines[idx]
+                    try:
+                        if attr:
+                            stdscr.attron(attr)
+                        stdscr.addstr(content_start + i, 0, text)
+                        if attr:
+                            stdscr.attroff(attr)
+                    except curses.error:
+                        pass
+            footer = " [↑][↓] Player  [PgUp][PgDn] Scroll  [Enter] Player  [Q] Back "
+            stdscr.addstr(height - 1, 0, footer[: width - 1], curses.A_DIM)
         except (curses.error, Exception):
             try:
                 stdscr.addstr(height - 1, 0, " [Q] Back ", curses.A_DIM)
@@ -261,13 +356,22 @@ def show_team_page(stdscr, tricode, team_name, cfg, color_ctx, api_client, team_
 
         if key == ord("q") or key == ord("Q") or key == 27:
             break
-        if key == curses.KEY_UP and roster_list:
+        if key == curses.KEY_PPAGE:
+            scroll_offset = max(0, scroll_offset - max(1, view_height // 2))
+        elif key == curses.KEY_NPAGE:
+            scroll_offset = min(max(0, content_height - view_height), scroll_offset + max(1, view_height // 2))
+        elif key == curses.KEY_UP and roster_list:
             selected_roster_idx = max(0, selected_roster_idx - 1)
         elif key == curses.KEY_DOWN and roster_list:
             selected_roster_idx = min(len(roster_list) - 1, selected_roster_idx + 1)
         elif (key == ord("\n") or key == ord("\r")) and roster_list and 0 <= selected_roster_idx < len(roster_list):
             r = roster_list[selected_roster_idx]
-            show_team_player_card(stdscr, str(r.get("PLAYER", "-")), str(r.get("NUM", "")), str(r.get("POSITION", "")), team_name, tricode, color_ctx)
+            player_name = str(r.get("PLAYER", "-"))
+            person_id = r.get("PLAYER_ID") or r.get("player_id")
+            if person_id is not None:
+                player_ui.show_player_page(stdscr, person_id, player_name, tricode, cfg, color_ctx, api_client)
+            else:
+                show_team_player_card(stdscr, player_name, str(r.get("NUM", "")), str(r.get("POSITION", "")), team_name, tricode, color_ctx)
 
 
 def show_teams_picker(stdscr, east, west, cfg, color_ctx, api_client):

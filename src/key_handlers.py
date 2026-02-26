@@ -1,4 +1,4 @@
-"""Mapeamento de teclas para ações do app (dashboard). Evita switch gigante no main."""
+"""Key-to-action mapping for the app (dashboard). Avoids a large switch in main."""
 from __future__ import annotations
 
 import curses
@@ -7,11 +7,11 @@ from typing import Optional
 
 def get_action(key: int, game_count: int = 0) -> Optional[str]:
     """
-    Converte tecla do curses em ação string.
-    Retorna None se a tecla não for uma ação conhecida ou key == -1 (timeout).
+    Convert curses key code to action string.
+    Returns None if the key is not a known action or key == -1 (timeout).
 
-    Ações: quit, refresh, config, help, filter, teams, date, today,
-           prev_day, next_day, game:0 .. game:N (N = min(19, game_count-1)).
+    Actions: quit, refresh, config, help, filter, teams, date, today,
+             prev_day, next_day, game:0 .. game:N (N = min(19, game_count-1)).
     """
     if key == -1:
         return None
@@ -37,7 +37,11 @@ def get_action(key: int, game_count: int = 0) -> Optional[str]:
         return "prev_day"
     if key in (ord("."), ord("]"), curses.KEY_RIGHT):
         return "next_day"
-    # Jogo por índice: 1-9 -> 0-8, 0 -> 9, a-j -> 10-19
+    if key == curses.KEY_UP:
+        return "scroll_up"
+    if key == curses.KEY_DOWN:
+        return "scroll_down"
+    # Game by index: 1-9 -> 0-8, 0 -> 9, a-j -> 10-19
     if ord("1") <= key <= ord("9"):
         idx = key - ord("1")
         if 0 <= idx < game_count:

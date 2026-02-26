@@ -1,4 +1,4 @@
-"""Dashboard: lista de jogos (em andamento, não iniciados, final), standings e league leaders."""
+"""Dashboard: game list (in progress, not started, final), standings, and league leaders."""
 import curses
 from datetime import datetime, timezone
 from dateutil import parser
@@ -21,9 +21,9 @@ def _standings_row_attr(rank):
     return curses.A_DIM
 
 
-def draw_game_row(stdscr, row, game, i, width, cfg, color_ctx, tz_info=None):
-    away = game["awayTeam"]
-    home = game["homeTeam"]
+def draw_game_row(stdscr, row, game, i, width, cfg, color_ctx, tz_info=None, layout_mode=None):
+    away = game.get("awayTeam") or {}
+    home = game.get("homeTeam") or {}
     away_tricode = away.get("teamTricode", "")
     home_tricode = home.get("teamTricode", "")
     away_name = format_team_name(away)
@@ -34,12 +34,21 @@ def draw_game_row(stdscr, row, game, i, width, cfg, color_ctx, tz_info=None):
     status = _format_live_clock(game) if is_live else game.get("gameStatusText", "")
     placar = f"{away_score} x {home_score}" if is_live else "vs"
     try:
-        game_time = parser.parse(game["gameTimeUTC"]).replace(tzinfo=timezone.utc)
-        game_time = game_time.astimezone(tz_info) if tz_info else game_time.astimezone(tz=None)
-        time_str = game_time.strftime("%H:%M")
+        game_time_utc = game.get("gameTimeUTC")
+        if game_time_utc:
+            game_time = parser.parse(game_time_utc).replace(tzinfo=timezone.utc)
+            game_time = game_time.astimezone(tz_info) if tz_info else game_time.astimezone(tz=None)
+            time_str = game_time.strftime("%H:%M")
+        else:
+            time_str = "-"
     except Exception:
         time_str = "-"
-    compact = width < 90
+    if layout_mode == "compact":
+        compact = True
+    elif layout_mode == "wide":
+        compact = False
+    else:
+        compact = width < 90
     away_display = away_tricode if compact else away_name
     home_display = home_tricode if compact else home_name
     idx_label = _game_index_label(i)
@@ -78,7 +87,7 @@ def draw_game_row(stdscr, row, game, i, width, cfg, color_ctx, tz_info=None):
             pass
 
 
-def draw_splash(stdscr, message="Loading..."):
+def draw_splash(stdscr, message="Loading...", progress=0.0):
     height, width = stdscr.getmaxyx()
     stdscr.clear()
     try:
@@ -86,6 +95,8 @@ def draw_splash(stdscr, message="Loading..."):
         stdscr.addstr(height // 2 - 2, max(0, (width - len(title)) // 2), title, curses.A_BOLD | curses.A_REVERSE)
         stdscr.addstr(height // 2, max(0, (width - len(message) - 4) // 2), f" {message} ", curses.A_DIM)
         stdscr.addstr(height // 2 + 1, max(0, (width - 20) // 2), constants.SPLASH_PLEASE_WAIT, curses.A_DIM)
+        from .helpers import draw_loading_bar
+        draw_loading_bar(stdscr, height // 2 + 3, width, progress)
         stdscr.refresh()
     except curses.error:
         pass
@@ -114,14 +125,14 @@ def _draw_dashboard_header(stdscr, width, game_date_str, live_str, em_andamento,
     return max(row, 2)
 
 
-def _draw_games_section(stdscr, row, games, game_idx, width, cfg, color_ctx, title, tz_info=None):
+def _draw_games_section(stdscr, row, games, game_idx, width, cfg, color_ctx, title, tz_info=None, layout_mode=None):
     try:
         stdscr.addstr(row, 0, title, curses.A_BOLD | curses.A_REVERSE)
     except curses.error:
         pass
     row += 1
     for game in games:
-        draw_game_row(stdscr, row, game, game_idx, width, cfg, color_ctx, tz_info=tz_info)
+        draw_game_row(stdscr, row, game, game_idx, width, cfg, color_ctx, tz_info=tz_info, layout_mode=layout_mode)
         row += 1
         game_idx += 1
     return row + 1, game_idx
@@ -217,52 +228,72 @@ def _draw_standings_wide(stdscr, table_start, height, east, west, col_width, col
             pass
 
 
-def _draw_standings_narrow(stdscr, table_start, east, west, height, color_ctx):
-    for conf_name, conf_label, offset in [
-        ("East", " EAST (1-6 Playoff | 7-10 Play-in) ", 0),
-        ("West", " WEST (1-6 Playoff | 7-10 Play-in) ", 19),
-    ]:
-        conf = east if conf_name == "East" else west
-        if conf is None:
-            continue
-        r = table_start + offset
+STANDINGS_NARROW_ROWS = 36  # East: 2 header + 15 teams; blank; West: 2 header + 15 teams
+
+
+def _draw_standings_narrow(stdscr, table_start, east, west, height, color_ctx, standings_scroll=0):
+    """Draw standings in narrow/compact layout with optional scroll. Only draws visible rows."""
+    visible = min(STANDINGS_NARROW_ROWS, max(0, height - table_start - 1))
+    if visible <= 0:
+        return
+
+    for L in range(standings_scroll, min(standings_scroll + visible, STANDINGS_NARROW_ROWS)):
+        screen_row = table_start + (L - standings_scroll)
+        if screen_row >= height - 2:
+            break
         try:
-            stdscr.addstr(r, 0, conf_label, curses.A_BOLD | curses.A_REVERSE)
-            stdscr.addstr(r + 1, 0, f"{'#':<2} {'Team':<28} {'W':<4} {'L':<4} {'PCT':<6}")
-        except curses.error:
-            pass
-        for i in range(min(15, len(conf))):
-            rn = r + 2 + i
-            if rn >= height - 2:
-                break
-            line = conf.iloc[i]
-            rank = int(line["PlayoffRank"])
-            team = f"{line['TeamCity']} {line['TeamName']}"
-            tr = constants.get_tricode_from_team(team)
-            try:
-                stdscr.addstr(rn, 0, f"{rank:<2} ")
+            if L == 0:
+                stdscr.addstr(screen_row, 0, " EAST (1-6 Playoff | 7-10 Play-in) ", curses.A_BOLD | curses.A_REVERSE)
+            elif L == 1:
+                stdscr.addstr(screen_row, 0, f"{'#':<2} {'Team':<28} {'W':<4} {'L':<4} {'PCT':<6}")
+            elif 2 <= L <= 16 and east is not None and (L - 2) < len(east):
+                line = east.iloc[L - 2]
+                rank = int(line["PlayoffRank"])
+                team = f"{line['TeamCity']} {line['TeamName']}"
+                tr = constants.get_tricode_from_team(team)
+                stdscr.addstr(screen_row, 0, f"{rank:<2} ")
                 stdscr.attron(_standings_row_attr(rank))
                 stdscr.attron(curses.color_pair(color_ctx.get_team_highlight_pair(tr)))
-                stdscr.addstr(rn, 4, f"{team[:26]:<28}")
+                stdscr.addstr(screen_row, 4, f"{team[:26]:<28}")
                 stdscr.attroff(curses.color_pair(color_ctx.get_team_highlight_pair(tr)))
                 stdscr.attroff(_standings_row_attr(rank))
-                stdscr.addstr(rn, 34, f"{int(line['WINS']):<4} {int(line['LOSSES']):<4} {line['WinPCT']:.1%}")
-            except (curses.error, (KeyError, IndexError)):
-                pass
+                stdscr.addstr(screen_row, 34, f"{int(line['WINS']):<4} {int(line['LOSSES']):<4} {line['WinPCT']:.1%}")
+            elif L == 17:
+                stdscr.addstr(screen_row, 0, "")
+            elif L == 18:
+                stdscr.addstr(screen_row, 0, " WEST (1-6 Playoff | 7-10 Play-in) ", curses.A_BOLD | curses.A_REVERSE)
+            elif L == 19:
+                stdscr.addstr(screen_row, 0, f"{'#':<2} {'Team':<28} {'W':<4} {'L':<4} {'PCT':<6}")
+            elif 20 <= L <= 35 and west is not None and (L - 20) < len(west):
+                line = west.iloc[L - 20]
+                rank = int(line["PlayoffRank"])
+                team = f"{line['TeamCity']} {line['TeamName']}"
+                tr = constants.get_tricode_from_team(team)
+                stdscr.addstr(screen_row, 0, f"{rank:<2} ")
+                stdscr.attron(_standings_row_attr(rank))
+                stdscr.attron(curses.color_pair(color_ctx.get_team_highlight_pair(tr)))
+                stdscr.addstr(screen_row, 4, f"{team[:26]:<28}")
+                stdscr.attroff(curses.color_pair(color_ctx.get_team_highlight_pair(tr)))
+                stdscr.attroff(_standings_row_attr(rank))
+                stdscr.addstr(screen_row, 34, f"{int(line['WINS']):<4} {int(line['LOSSES']):<4} {line['WinPCT']:.1%}")
+        except (curses.error, (KeyError, IndexError)):
+            pass
 
 
-def _draw_dashboard_footer(stdscr, height, width, cfg, filter_favorite_only=False):
+def _draw_dashboard_footer(stdscr, height, width, cfg, filter_favorite_only=False, scroll_hint=False):
     filter_label = config.get_text(cfg, "footer_filter")
     if filter_favorite_only:
         filter_label = filter_label + " *"
     footer = f" [1-9,0,a-j] {config.get_text(cfg, 'footer_games')}  [T] {config.get_text(cfg, 'footer_teams')}  [L] {config.get_text(cfg, 'footer_lakers')}  [G] {config.get_text(cfg, 'footer_date')}  [,][.]  [D] {config.get_text(cfg, 'footer_today')}  [R] {config.get_text(cfg, 'footer_refresh')}  [F] {filter_label}  [C] {config.get_text(cfg, 'footer_config')}  [?] {config.get_text(cfg, 'footer_help')}  [Q] {config.get_text(cfg, 'footer_quit')} "
+    if scroll_hint:
+        footer += " [↑][↓] Scroll standings "
     try:
         stdscr.addstr(height - 1, 0, footer[: width - 1], curses.A_DIM)
     except curses.error:
         pass
 
 
-def draw_dashboard(stdscr, games, scoreboard_date, east, west, game_date_str, cfg, api_client, color_ctx, last_refresh=None, league_leaders=None, filter_favorite_only=False, game_sort=None, tz_info=None):
+def draw_dashboard(stdscr, games, scoreboard_date, east, west, game_date_str, cfg, api_client, color_ctx, last_refresh=None, league_leaders=None, filter_favorite_only=False, game_sort=None, tz_info=None, standings_scroll=0):
     height, width = stdscr.getmaxyx()
     stdscr.clear()
 
@@ -292,13 +323,14 @@ def draw_dashboard(stdscr, games, scoreboard_date, east, west, game_date_str, cf
     err = api_client.get_last_error()
     row = _draw_dashboard_header(stdscr, width, game_date_str, live_str, em_andamento, err, cfg)
     game_idx = 0
+    layout = config.layout_mode(cfg) if cfg else "auto"
 
     if em_andamento:
-        row, game_idx = _draw_games_section(stdscr, row, em_andamento, game_idx, width, cfg, color_ctx, " GAMES IN PROGRESS ", tz_info=tz_info)
+        row, game_idx = _draw_games_section(stdscr, row, em_andamento, game_idx, width, cfg, color_ctx, " GAMES IN PROGRESS ", tz_info=tz_info, layout_mode=layout)
     if nao_comecaram:
-        row, game_idx = _draw_games_section(stdscr, row, nao_comecaram, game_idx, width, cfg, color_ctx, " GAMES NOT STARTED ", tz_info=tz_info)
+        row, game_idx = _draw_games_section(stdscr, row, nao_comecaram, game_idx, width, cfg, color_ctx, " GAMES NOT STARTED ", tz_info=tz_info, layout_mode=layout)
     if finalizados:
-        row, game_idx = _draw_games_section(stdscr, row, finalizados, game_idx, width, cfg, color_ctx, " GAMES FINAL ", tz_info=tz_info)
+        row, game_idx = _draw_games_section(stdscr, row, finalizados, game_idx, width, cfg, color_ctx, " GAMES FINAL ", tz_info=tz_info, layout_mode=layout)
 
     sep_row = row
     try:
@@ -308,15 +340,22 @@ def draw_dashboard(stdscr, games, scoreboard_date, east, west, game_date_str, cf
 
     table_start = _draw_league_leaders(stdscr, sep_row, width, height, league_leaders)
     col_width = min(55, width // 2 - 2) if width >= 100 else min(50, width - 2)
+    layout = config.layout_mode(cfg) if cfg else "auto"
+    use_wide_standings = (layout == "wide") or (layout == "auto" and width >= 100)
+    standings_scroll = standings_scroll or 0
 
-    if width >= 100:
+    if use_wide_standings:
         _draw_standings_wide(stdscr, table_start, height, east, west, col_width, color_ctx)
+        max_standings_scroll = 0
     else:
-        _draw_standings_narrow(stdscr, table_start, east, west, height, color_ctx)
+        visible_standings = max(0, height - table_start - 1)
+        max_standings_scroll = max(0, STANDINGS_NARROW_ROWS - visible_standings)
+        standings_scroll = min(max(standings_scroll, 0), max_standings_scroll)
+        _draw_standings_narrow(stdscr, table_start, east, west, height, color_ctx, standings_scroll=standings_scroll)
 
-    _draw_dashboard_footer(stdscr, height, width, cfg, filter_favorite_only)
+    _draw_dashboard_footer(stdscr, height, width, cfg, filter_favorite_only, scroll_hint=not use_wide_standings and max_standings_scroll > 0)
     stdscr.refresh()
-    return all_games
+    return all_games, max_standings_scroll if not use_wide_standings else 0
 
 
 def _game_has_team(game, tricode):
@@ -327,7 +366,7 @@ def _game_has_team(game, tricode):
 
 
 def _make_game_sort_key(cfg, game_sort, fav):
-    """Retorna uma função de ordenação para jogos, ou None para ordem padrão."""
+    """Return a sort key function for games, or None for default order."""
     if not game_sort or game_sort == "time":
         def by_time(g):
             try:

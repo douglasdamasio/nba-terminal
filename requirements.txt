@@ -1,4 +1,4 @@
-nba_api>=1.4
+nba_api>=1.11.4  # 1.11.4+ fixes NBA.com request headers (user-agent)
 python-dateutil>=2.8
 tenacity>=8.0
 cachetools>=5.0

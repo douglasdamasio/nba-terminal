@@ -1,13 +1,12 @@
-"""Tela de ajuda com lista de atalhos do teclado."""
+"""Help screen with keyboard shortcut list and full explanations."""
 
 import curses
 
 import config
-from .helpers import wait_key
 
 
 def show_help(stdscr, cfg):
-    """Exibe a tela de ajuda com todos os atalhos. Qualquer tecla fecha."""
+    """Display the help screen with all shortcuts and full descriptions. PgUp/PgDn to scroll. Any key closes."""
     height, width = stdscr.getmaxyx()
     stdscr.clear()
 
@@ -16,27 +15,58 @@ def show_help(stdscr, cfg):
 
     lines = [
         "",
-        " [1-9] [0] [a-j]  " + config.get_text(cfg, "footer_games"),
-        " [T]               " + config.get_text(cfg, "footer_teams"),
-        " [L]               " + config.get_text(cfg, "footer_lakers"),
-        " [G]               " + config.get_text(cfg, "footer_date"),
-        " [,] [.]  [←] [→]  " + config.get_text(cfg, "help_nav_date"),
-        " [D]                " + config.get_text(cfg, "footer_today"),
-        " [R]                " + config.get_text(cfg, "footer_refresh"),
-        " [F]                " + config.get_text(cfg, "help_filter"),
-        " [C]                " + config.get_text(cfg, "footer_config"),
-        " [?] [H]            " + config.get_text(cfg, "help_help"),
-        " [Q]                " + config.get_text(cfg, "footer_quit"),
+        config.get_text(cfg, "help_intro"),
+        "",
+        config.get_text(cfg, "help_section_games"),
+        config.get_text(cfg, "help_games_select"),
+        config.get_text(cfg, "help_games_nav"),
+        config.get_text(cfg, "help_games_today"),
+        config.get_text(cfg, "help_games_date"),
+        config.get_text(cfg, "help_games_filter"),
+        "",
+        config.get_text(cfg, "help_section_team"),
+        config.get_text(cfg, "help_team_scroll"),
+        config.get_text(cfg, "help_team_player"),
+        config.get_text(cfg, "help_team_enter"),
+        "",
+        config.get_text(cfg, "help_section_global"),
+        config.get_text(cfg, "help_global_teams"),
+        config.get_text(cfg, "help_global_fav"),
+        config.get_text(cfg, "help_global_refresh"),
+        config.get_text(cfg, "help_global_config"),
+        config.get_text(cfg, "help_global_help"),
+        config.get_text(cfg, "help_global_quit"),
         "",
     ]
 
-    try:
-        stdscr.addstr(0, 0, title, curses.A_BOLD | curses.A_REVERSE)
-        for i, line in enumerate(lines):
-            if 2 + i < height - 2:
-                stdscr.addstr(2 + i, 0, line[: width - 1])
-        stdscr.addstr(height - 1, 0, f" {press_key} "[: width - 1], curses.A_DIM)
-    except curses.error:
-        pass
-    stdscr.refresh()
-    wait_key(stdscr)
+    content_start = 2
+    view_height = max(1, height - content_start - 2)
+    total_lines = len(lines)
+    scroll_offset = 0
+
+    while True:
+        stdscr.clear()
+        try:
+            stdscr.addstr(0, 0, title, curses.A_BOLD | curses.A_REVERSE)
+            for i in range(view_height):
+                idx = scroll_offset + i
+                if idx < total_lines:
+                    line = lines[idx][: width - 1]
+                    stdscr.addstr(content_start + i, 0, line)
+            footer = f" {press_key} "
+            if total_lines > view_height:
+                footer = " [PgUp][PgDn] Scroll  " + footer
+            stdscr.addstr(height - 1, 0, footer[: width - 1], curses.A_DIM)
+        except curses.error:
+            pass
+        stdscr.refresh()
+        stdscr.nodelay(False)
+        key = stdscr.getch()
+        stdscr.nodelay(True)
+
+        if key == curses.KEY_PPAGE:
+            scroll_offset = max(0, scroll_offset - max(1, view_height // 2))
+        elif key == curses.KEY_NPAGE:
+            scroll_offset = min(max(0, total_lines - view_height), scroll_offset + max(1, view_height // 2))
+        else:
+            break

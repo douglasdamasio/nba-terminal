@@ -1,4 +1,4 @@
-"""Cliente da NBA API: jogos, standings, league leaders, box score e dados de times (cache e retry)."""
+"""NBA API client: games, standings, league leaders, box score, and team data (cache and retry)."""
 from __future__ import annotations
 
 import json
@@ -18,15 +18,17 @@ logger = logging.getLogger(__name__)
 
 from nba_api.live.nba.endpoints import scoreboard, boxscore
 from nba_api.stats.endpoints import (
+    commonplayerinfo,
     commonteamroster,
     leaguegamelog,
     leaguestandingsv3,
+    playergamelog,
     scoreboardv3,
     teamgamelog,
     teaminfocommon,
     leagueleaders,
 )
-from nba_api.stats.library.parameters import PlayerOrTeamAbbreviation, StatCategoryAbbreviation
+from nba_api.stats.library.parameters import PlayerOrTeamAbbreviation, Season, StatCategoryAbbreviation
 
 import config
 import constants
@@ -62,8 +64,24 @@ def _disk_cache_set(key: str, value: Any) -> None:
         pass
 
 
+def _disk_cache_get_offline(key: str, max_age_seconds: int) -> Optional[Any]:
+    """Return cached data if file exists and age <= max_age_seconds (for offline fallback)."""
+    path = os.path.join(_disk_cache_dir(), f"{key}.json")
+    if not os.path.isfile(path):
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        ts = data.get("ts", 0)
+        if time.time() - ts > max_age_seconds:
+            return None
+        return data.get("data")
+    except (json.JSONDecodeError, OSError):
+        return None
+
+
 def _user_facing_error(exc: Exception, default_prefix: str) -> str:
-    """Mensagem curta e amigável para o usuário a partir da exceção."""
+    """Short, user-friendly message derived from the exception."""
     msg = str(exc).strip() or type(exc).__name__
     err_lower = msg.lower()
     if "timeout" in err_lower or "timed out" in err_lower:
@@ -139,7 +157,7 @@ def build_quarter_scores(away_team, home_team):
     reraise=True,
 )
 def _with_retry(thunk: Callable[[], Any]) -> Any:
-    """Executa thunk com retry (tenacity). Usado por fetch_games e fetch_standings."""
+    """Execute thunk with retry (tenacity). Used by fetch_games and fetch_standings."""
     return thunk()
 
 
@@ -151,9 +169,20 @@ class ApiClient:
         self._cache_box = TTLCache(maxsize=64, ttl=constants.CACHE_TTL_BOX_SCORE)
         self._last_error = None
         self._last_request_time: float = 0
+        self._last_games_from_cache = False
+        self._last_standings_from_cache = False
+        self._last_leaders_from_cache = False
+
+    def any_data_from_cache(self) -> bool:
+        """True if any of the last fetch (games, standings, leaders) used offline/cached data."""
+        return (
+            self._last_games_from_cache
+            or self._last_standings_from_cache
+            or self._last_leaders_from_cache
+        )
 
     def _rate_limit(self) -> None:
-        """Aguarda intervalo mínimo entre requisições (rate limiting)."""
+        """Wait for minimum interval between requests (rate limiting)."""
         elapsed = time.time() - self._last_request_time
         if elapsed < constants.RATE_LIMIT_MIN_INTERVAL:
             delay = constants.RATE_LIMIT_MIN_INTERVAL - elapsed
@@ -163,6 +192,40 @@ class ApiClient:
 
     def get_last_error(self) -> Optional[str]:
         return self._last_error
+
+    def get_initial_data_from_cache_only(
+        self, game_date_iso: str
+    ) -> Tuple[list, str, Optional[Any], Optional[Any], dict]:
+        """
+        Load initial data from disk cache only (no network). Use when API is slow or unavailable.
+        Returns (games, scoreboard_date, east, west, league_leaders).
+        """
+        cache_key = f"games:{game_date_iso}"
+        games, scoreboard_date = [], game_date_iso
+        offline_games = _disk_cache_get_offline(cache_key, constants.CACHE_TTL_OFFLINE)
+        if offline_games is not None and isinstance(offline_games, (list, tuple)) and len(offline_games) >= 2:
+            games, scoreboard_date = offline_games[0], offline_games[1]
+
+        east, west = None, None
+        disk_standings = _disk_cache_get_offline("standings", constants.CACHE_TTL_OFFLINE)
+        if disk_standings is not None:
+            try:
+                east = pd.DataFrame(disk_standings["east"]) if disk_standings.get("east") else None
+                west = pd.DataFrame(disk_standings["west"]) if disk_standings.get("west") else None
+                if east is not None and east.empty:
+                    east = None
+                if west is not None and west.empty:
+                    west = None
+            except Exception:
+                pass
+
+        league_leaders = {"PTS": [], "REB": [], "AST": [], "TDBL": []}
+        disk_leaders = _disk_cache_get_offline("league_leaders", constants.CACHE_TTL_OFFLINE)
+        if disk_leaders is not None and isinstance(disk_leaders, dict):
+            for k, v in disk_leaders.items():
+                league_leaders[k] = [tuple(x) for x in v] if isinstance(v, list) else v
+
+        return (games, scoreboard_date, east, west, league_leaders)
 
     def _cache_get(self, cache: Any, key: str) -> Any:
         try:
@@ -183,9 +246,12 @@ class ApiClient:
 
         def _do():
             if game_date is None or date_str == today:
-                board = scoreboard.ScoreBoard()
-                return board.games.get_dict(), board.score_board_date
-            sb = scoreboardv3.ScoreboardV3(game_date=date_str)
+                try:
+                    board = scoreboard.ScoreBoard(timeout=constants.REQUEST_TIMEOUT)
+                    return board.games.get_dict(), board.score_board_date
+                except Exception:
+                    pass
+            sb = scoreboardv3.ScoreboardV3(game_date=date_str, timeout=constants.REQUEST_TIMEOUT)
             resp = sb.nba_response.get_dict()
             scoreboard_data = resp.get("scoreboard", {})
             games = scoreboard_data.get("games", [])
@@ -194,13 +260,19 @@ class ApiClient:
 
         try:
             self._last_error = None
+            self._last_games_from_cache = False
             self._rate_limit()
             result = _with_retry(_do)
             self._cache_set(self._cache_games, cache_key, result)
+            _disk_cache_set(cache_key, result)
             return result
         except Exception as e:
             self._last_error = _user_facing_error(e, "Games")
             logger.warning("fetch_games failed: %s", e, exc_info=True)
+            offline = _disk_cache_get_offline(cache_key, constants.CACHE_TTL_OFFLINE)
+            if offline is not None and isinstance(offline, (list, tuple)) and len(offline) >= 2:
+                self._last_games_from_cache = True
+                return offline[0], offline[1]
             return [], date_str
 
     def fetch_standings(self) -> Tuple[Optional[Any], Optional[Any]]:
@@ -221,7 +293,7 @@ class ApiClient:
             return cached
 
         def _do():
-            standings = leaguestandingsv3.LeagueStandingsV3()
+            standings = leaguestandingsv3.LeagueStandingsV3(timeout=constants.REQUEST_TIMEOUT)
             df = standings.get_data_frames()[0]
             if df.empty:
                 return None, None
@@ -231,6 +303,7 @@ class ApiClient:
 
         try:
             self._last_error = None
+            self._last_standings_from_cache = False
             self._rate_limit()
             result = _with_retry(_do)
             self._cache_set(self._cache_standings, "standings", result)
@@ -243,12 +316,27 @@ class ApiClient:
         except Exception as e:
             self._last_error = _user_facing_error(e, "Standings")
             logger.warning("fetch_standings failed: %s", e, exc_info=True)
+            disk = _disk_cache_get_offline("standings", constants.CACHE_TTL_OFFLINE)
+            if disk is not None:
+                try:
+                    east = pd.DataFrame(disk["east"]) if disk.get("east") else None
+                    west = pd.DataFrame(disk["west"]) if disk.get("west") else None
+                    if east is not None and east.empty:
+                        east = None
+                    if west is not None and west.empty:
+                        west = None
+                    if east is not None or west is not None:
+                        self._last_standings_from_cache = True
+                        return east, west
+                except Exception:
+                    pass
             return None, None
 
     def _fetch_triple_double_leaders(self):
         try:
             log = leaguegamelog.LeagueGameLog(
                 player_or_team_abbreviation=PlayerOrTeamAbbreviation.player,
+                timeout=constants.REQUEST_TIMEOUT,
             )
             df = _with_retry(lambda: log.get_data_frames()[0])
             if df.empty:
@@ -286,27 +374,39 @@ class ApiClient:
         if cached is not None:
             return cached
 
-        self._rate_limit()
-        result = {"PTS": [], "REB": [], "AST": [], "TDBL": []}
-        for stat, col in [
-            (StatCategoryAbbreviation.pts, "PTS"),
-            (StatCategoryAbbreviation.reb, "REB"),
-            (StatCategoryAbbreviation.ast, "AST"),
-        ]:
+        try:
+            self._last_leaders_from_cache = False
+            self._rate_limit()
+            result = {"PTS": [], "REB": [], "AST": [], "TDBL": []}
+            for stat, col in [
+                (StatCategoryAbbreviation.pts, "PTS"),
+                (StatCategoryAbbreviation.reb, "REB"),
+                (StatCategoryAbbreviation.ast, "AST"),
+            ]:
+                try:
+                    def _do(s=stat, c=col):
+                        ldf = leagueleaders.LeagueLeaders(stat_category_abbreviation=s, timeout=constants.REQUEST_TIMEOUT).get_data_frames()[0]
+                        return [(p.get("PLAYER", "-"), p.get("TEAM", "-"), p.get(c, 0)) for _, p in ldf.head(3).iterrows()]
+                    result[col] = _with_retry(_do)
+                except Exception:
+                    pass
             try:
-                def _do(s=stat, c=col):
-                    ldf = leagueleaders.LeagueLeaders(stat_category_abbreviation=s).get_data_frames()[0]
-                    return [(p.get("PLAYER", "-"), p.get("TEAM", "-"), p.get(c, 0)) for _, p in ldf.head(3).iterrows()]
-                result[col] = _with_retry(_do)
+                result["TDBL"] = _with_retry(self._fetch_triple_double_leaders)
             except Exception:
                 pass
-        try:
-            result["TDBL"] = _with_retry(self._fetch_triple_double_leaders)
-        except Exception:
-            pass
-        self._cache_set(self._cache_leaders, "league_leaders", result)
-        _disk_cache_set("league_leaders", {k: [list(t) for t in v] for k, v in result.items()})
-        return result
+            self._cache_set(self._cache_leaders, "league_leaders", result)
+            _disk_cache_set("league_leaders", {k: [list(t) for t in v] for k, v in result.items()})
+            return result
+        except Exception as e:
+            logger.warning("fetch_league_leaders failed: %s", e)
+            offline = _disk_cache_get_offline("league_leaders", constants.CACHE_TTL_OFFLINE)
+            if offline is not None and isinstance(offline, dict):
+                self._last_leaders_from_cache = True
+                out = {}
+                for k, v in offline.items():
+                    out[k] = [tuple(x) for x in v] if isinstance(v, list) else v
+                return out
+            return {"PTS": [], "REB": [], "AST": [], "TDBL": []}
 
     def get_box_score(self, game_id: Optional[str]) -> Optional[dict]:
         if not game_id:
@@ -316,17 +416,18 @@ class ApiClient:
         if cached is not None:
             return cached
         try:
-            bs = boxscore.BoxScore(game_id)
+            bs = boxscore.BoxScore(game_id, timeout=constants.REQUEST_TIMEOUT)
             game_data = bs.game.get_dict()
             self._cache_set(self._cache_box, cache_key, game_data)
             return game_data
         except Exception:
             return None
 
-    def fetch_team_games(self, team_id, limit=5):
+    def fetch_team_games(self, team_id: int, limit: int = 10) -> list:
+        """Last/recent games for a team (by team_id). Returns list of dicts with GAME_DATE, MATCHUP, WL, PTS, etc."""
         try:
-            from nba_api.stats.library.parameters import Season
-            log = teamgamelog.TeamGameLog(team_id=team_id, season=Season.default)
+            self._rate_limit()
+            log = teamgamelog.TeamGameLog(team_id=team_id, season=Season.default, timeout=constants.REQUEST_TIMEOUT)
             df = log.get_data_frames()[0]
             if df.empty:
                 return []
@@ -334,32 +435,37 @@ class ApiClient:
         except Exception:
             return []
 
-    def fetch_team_upcoming_games(self, team_tricode, days=7):
+    def fetch_team_upcoming_games(self, team_tricode: str, days: int = 14, limit: int = 10) -> list:
+        """Next/upcoming games for a team (by tricode). Includes today. Returns list of (date_str, game) with date and time."""
         games = []
         today = datetime.now().date()
-        for d in range(1, days + 1):
+        tricode_upper = (team_tricode or "").strip().upper()
+        for d in range(0, days + 1):
             try:
+                self._rate_limit()
                 date_str = (today + timedelta(days=d)).isoformat()
-                sb = scoreboardv3.ScoreboardV3(game_date=date_str)
+                sb = scoreboardv3.ScoreboardV3(game_date=date_str, timeout=constants.REQUEST_TIMEOUT)
                 resp = sb.nba_response.get_dict()
                 for g in resp.get("scoreboard", {}).get("games", []):
                     away = g.get("awayTeam", {}).get("teamTricode", "")
                     home = g.get("homeTeam", {}).get("teamTricode", "")
-                    if team_tricode in (away, home):
+                    if tricode_upper in (away, home):
                         games.append((date_str, g))
+                        if len(games) >= limit:
+                            return games
             except Exception:
                 pass
-        return games[:5]
+        return games
 
     def fetch_team_page_info(self, team_id):
         try:
-            return teaminfocommon.TeamInfoCommon(team_id=team_id)
+            return teaminfocommon.TeamInfoCommon(team_id=team_id, timeout=constants.REQUEST_TIMEOUT)
         except Exception:
             return None
 
     def fetch_team_page_leader(self, stat, tricode, col):
         try:
-            ldf = leagueleaders.LeagueLeaders(stat_category_abbreviation=stat).get_data_frames()[0]
+            ldf = leagueleaders.LeagueLeaders(stat_category_abbreviation=stat, timeout=constants.REQUEST_TIMEOUT).get_data_frames()[0]
             team_leaders = ldf[ldf["TEAM"] == tricode].head(3)
             if not team_leaders.empty:
                 return (col, [(p.get("PLAYER", "-"), p.get(col, 0)) for _, p in team_leaders.iterrows()])
@@ -369,10 +475,104 @@ class ApiClient:
 
     def fetch_team_roster(self, team_id):
         try:
-            roster = commonteamroster.CommonTeamRoster(team_id=team_id)
+            roster = commonteamroster.CommonTeamRoster(team_id=team_id, timeout=constants.REQUEST_TIMEOUT)
             dfs = roster.get_data_frames()
             if dfs and not dfs[0].empty:
                 return dfs[0]
         except Exception:
             pass
         return None
+
+    def fetch_player_info(self, player_id: int):
+        """Fetch player profile and headline stats (CommonPlayerInfo). Returns dict with DISPLAY_FIRST_LAST, PTS, REB, AST, etc. or None."""
+        try:
+            self._rate_limit()
+            info = _with_retry(lambda: commonplayerinfo.CommonPlayerInfo(player_id=player_id, timeout=constants.REQUEST_TIMEOUT))
+            dfs = info.get_data_frames()
+            if not dfs or dfs[0].empty:
+                return None
+            out = dfs[0].iloc[0].to_dict()
+            if len(dfs) > 1 and not dfs[1].empty:
+                for k, v in dfs[1].iloc[0].items():
+                    if k not in out or out[k] is None:
+                        out[k] = v
+            return out
+        except Exception:
+            return None
+
+    def fetch_player_game_log(self, player_id: int, limit: int = 10) -> list:
+        """Fetch recent game log for a player. Returns list of dicts with GAME_DATE, MATCHUP, PTS, etc."""
+        try:
+            self._rate_limit()
+            log = _with_retry(
+                lambda: playergamelog.PlayerGameLog(
+                    player_id=str(player_id),
+                    season=Season.default,
+                    timeout=constants.REQUEST_TIMEOUT,
+                )
+            )
+            df = log.get_data_frames()[0]
+            if df.empty:
+                return []
+            return df.head(limit).to_dict("records")
+        except Exception:
+            return []
+
+    def fetch_head_to_head(self, team_id_a: int, team_id_b: int) -> dict:
+        """
+        Fetch head-to-head between two teams (current season).
+        Returns dict with last_meeting (date, matchup, pts_a, pts_b, wl_a) and season_series (wins_a, wins_b, games).
+        """
+        out = {"last_meeting": None, "season_series": {"wins_a": 0, "wins_b": 0, "games": []}}
+        tricode_b = next((t for t, tid in constants.TRICODE_TO_TEAM_ID.items() if tid == team_id_b), None)
+        tricode_a = next((t for t, tid in constants.TRICODE_TO_TEAM_ID.items() if tid == team_id_a), None)
+        if not tricode_b or not tricode_a:
+            return out
+        try:
+            self._rate_limit()
+            log_a = teamgamelog.TeamGameLog(team_id=team_id_a, season=Season.default, timeout=constants.REQUEST_TIMEOUT)
+            df_a = _with_retry(lambda: log_a.get_data_frames()[0])
+            games_a = []
+            for _, row in df_a.iterrows():
+                matchup = str(row.get("MATCHUP", ""))
+                opp = (matchup.split(" vs. ")[1].strip() if " vs. " in matchup else
+                       matchup.split(" @ ")[1].strip() if " @ " in matchup else "")
+                if opp == tricode_b:
+                    games_a.append({
+                        "GAME_DATE": row.get("GAME_DATE"),
+                        "MATCHUP": row.get("MATCHUP"),
+                        "WL": row.get("WL"),
+                        "PTS": row.get("PTS"),
+                    })
+            if not games_a:
+                return out
+            games_a.sort(key=lambda g: g.get("GAME_DATE", ""), reverse=True)
+            out["season_series"]["games"] = games_a
+            out["season_series"]["wins_a"] = sum(1 for g in games_a if g.get("WL") == "W")
+            self._rate_limit()
+            log_b = teamgamelog.TeamGameLog(team_id=team_id_b, season=Season.default, timeout=constants.REQUEST_TIMEOUT)
+            df_b = _with_retry(lambda: log_b.get_data_frames()[0])
+            games_b = []
+            for _, row in df_b.iterrows():
+                matchup = str(row.get("MATCHUP", ""))
+                opp = (matchup.split(" vs. ")[1].strip() if " vs. " in matchup else
+                       matchup.split(" @ ")[1].strip() if " @ " in matchup else "")
+                if opp == tricode_a:
+                    games_b.append({"GAME_DATE": row.get("GAME_DATE"), "WL": row.get("WL"), "PTS": row.get("PTS")})
+            out["season_series"]["wins_b"] = sum(1 for g in games_b if g.get("WL") == "W")
+            g = games_a[0]
+            date_last = g.get("GAME_DATE")
+            out["last_meeting"] = {
+                "date": date_last,
+                "matchup": g.get("MATCHUP"),
+                "wl_a": g.get("WL"),
+                "pts_a": g.get("PTS"),
+                "pts_b": None,
+            }
+            for gb in games_b:
+                if gb.get("GAME_DATE") == date_last:
+                    out["last_meeting"]["pts_b"] = gb.get("PTS")
+                    break
+        except Exception:
+            pass
+        return out

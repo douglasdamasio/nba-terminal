@@ -1,4 +1,4 @@
-"""Lógica de negócio pura: categorização de jogos, formatação de relógio e rótulos. UI importa daqui."""
+"""Pure business logic: game categorization, clock formatting, and labels. UI imports from here."""
 from __future__ import annotations
 
 from typing import Any, List, Tuple
@@ -6,8 +6,8 @@ from typing import Any, List, Tuple
 
 def categorize_games(games: List[dict]) -> Tuple[List[dict], List[dict], List[dict]]:
     """
-    Separa jogos em: em andamento (tem placar, não final), não iniciados, finalizados.
-    Retorna (em_andamento, nao_comecaram, finalizados).
+    Split games into: in progress (has score, not final), not started, finished.
+    Returns (in_progress, not_started, finished).
     """
     em_andamento, nao_comecaram, finalizados = [], [], []
     for g in games:
@@ -24,7 +24,7 @@ def categorize_games(games: List[dict]) -> Tuple[List[dict], List[dict], List[di
 
 
 def format_live_clock(game: dict) -> str:
-    """Formata o relógio do jogo (ex.: Q3 5:30) a partir de gameStatusText, period e gameClock."""
+    """Format the game clock (e.g. Q3 5:30) from gameStatusText, period, and gameClock."""
     status = game.get("gameStatusText", "")
     if status and (status.startswith("Q") or ":" in status or "Halftime" in status):
         return status
@@ -47,7 +47,7 @@ def format_live_clock(game: dict) -> str:
 
 
 def game_index_label(i: int) -> str:
-    """Rótulo de tecla para o jogo na posição i: [1]..[9], [0], [a]..[j]."""
+    """Key label for the game at index i: [1]..[9], [0], [a]..[j]."""
     if i < 9:
         return f" [{i+1}] "
     if i == 9:

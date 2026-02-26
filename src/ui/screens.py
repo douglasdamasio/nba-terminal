@@ -1,4 +1,4 @@
-"""Telas de configuração, seleção de data e de time favorito."""
+"""Configuration screens, date selection, and favorite team selection."""
 import curses
 from datetime import datetime
 
@@ -9,7 +9,7 @@ import constants
 
 
 def parse_date_string(s: str):
-    """Parse string de data em vários formatos (YYYY-MM-DD, DD/MM/YYYY, etc.)."""
+    """Parse date string in various formats (YYYY-MM-DD, DD/MM/YYYY, etc.)."""
     if not s or not s.strip():
         return None
     try:
@@ -102,8 +102,15 @@ def show_config_screen(stdscr, cfg):
             theme_label = config.get_text(cfg, "theme_light")
         else:
             theme_label = config.get_text(cfg, "theme_default")
-        # Índices selecionáveis: 0-6 = opções, 11 = back (7-10 = separador e subseção About)
-        selectable_rows = [0, 1, 2, 3, 4, 5, 6, 11]
+        layout_val = cfg.get("layout_mode", "auto")
+        if layout_val == "compact":
+            layout_label = config.get_text(cfg, "layout_compact")
+        elif layout_val == "wide":
+            layout_label = config.get_text(cfg, "layout_wide")
+        else:
+            layout_label = config.get_text(cfg, "layout_auto")
+        # Selectable indices: 0-7 = options, 12 = back (8-11 = separator and About subsection)
+        selectable_rows = [0, 1, 2, 3, 4, 5, 6, 7, 12]
         lines = [
             config.get_text(cfg, "language") + ": " + lang_label,
             config.get_text(cfg, "refresh") + ": " + ref_display,
@@ -112,6 +119,7 @@ def show_config_screen(stdscr, cfg):
             config.get_text(cfg, "game_sort") + ": " + sort_label,
             config.get_text(cfg, "timezone") + ": " + tz_display,
             config.get_text(cfg, "theme") + ": " + theme_label,
+            config.get_text(cfg, "layout_mode") + ": " + layout_label,
             "",
             config.get_text(cfg, "about_title"),
             config.get_text(cfg, "developer") + ": " + config.DEVELOPER_NAME + " - " + config.DEVELOPER_GITHUB,
@@ -120,9 +128,9 @@ def show_config_screen(stdscr, cfg):
         ]
         for i, line in enumerate(lines):
             try:
-                if i == 8:
+                if i == 9:
                     attr = curses.A_BOLD | curses.A_REVERSE
-                elif i in (9, 10):
+                elif i in (10, 11):
                     attr = curses.A_DIM
                 elif i == selectable_rows[selected]:
                     attr = curses.A_BOLD | curses.A_REVERSE
@@ -169,7 +177,14 @@ def show_config_screen(stdscr, cfg):
                 except (ValueError, TypeError):
                     idx = 0
                 cfg["theme"] = themes[(idx + 1) % len(themes)]
-            elif row == 11:
+            elif row == 7:
+                layouts = ["auto", "compact", "wide"]
+                try:
+                    idx = layouts.index(layout_val) if layout_val in layouts else 0
+                except (ValueError, TypeError):
+                    idx = 0
+                cfg["layout_mode"] = layouts[(idx + 1) % len(layouts)]
+            elif row == 12:
                 config.save_config(cfg)
                 return
 

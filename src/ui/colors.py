@@ -1,4 +1,4 @@
-"""Cores por time: pares curses (true color ou fallback básico) para destaque no dashboard."""
+"""Team colors: curses pairs (true color or basic fallback) for dashboard highlighting."""
 import curses
 
 import constants

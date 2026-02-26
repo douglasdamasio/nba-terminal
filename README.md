@@ -4,19 +4,22 @@ TUI (Terminal User Interface) to follow NBA games, standings, season leaders, an
 
 ![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)
 
+**Plataforma:** suporte a **macOS, Linux e Windows**. Config e cache usam diretórios padrão por OS (veja [Configuration](#configuration)).
+
 ## Features
 
 - **Dashboard:** Today's games (in progress, not started, final) with score and time; highlight for favorite team
 - **Standings:** East and West tables (playoff and play-in) with team colors
 - **League leaders:** Top 3 in points, rebounds, assists, and triple-doubles
 - **Date navigation:** Keys `,` / `.` or arrow keys to change day; `G` to go to a date; `D` for today. Last viewed date is saved and restored when reopening the app
-- **Box score:** Keys `1`–`9`, `0`, `a`–`j` to open game statistics
-- **Team page:** `T` to choose team; `L` to go to favorite team (summary, leaders, upcoming/last games, roster)
-- **Settings (C):** Language (EN/PT), refresh interval (10/15/30/60/120 s or off), refresh mode (fixed or auto), favorite team, game order, and theme (default, high contrast, light); data saved in `~/.config/nba-terminal/`
+- **Box score:** Keys `1`–`9`, `0`, `a`–`j` to open game statistics; **[P] Player page** when a player is selected (season stats, recent games); **head-to-head** (last meeting and season series) shown at top
+- **Team page:** `T` to choose team; `L` to go to favorite team (summary, leaders, **head-to-head vs next opponent**, upcoming/last games, roster)
+- **Settings (C):** Language (EN/PT), refresh interval (10/15/30/60/120 s or off), refresh mode (fixed or auto), favorite team, game order, theme (default, high contrast, light), and **layout** (auto, compact, wide); data saved in the [config directory](#configuration) for your OS
 - **Filter and sort:** `F` to filter only your team's games; sort by time or “favorite first”
 - **Help:** `?` or `H` to see all shortcuts
 - **Network error:** On load failure the header shows a short message and “[R] Retry”
-- **Disk cache:** Standings and league leaders cached in `~/.config/nba-terminal/cache/` (1h TTL) to reduce API calls
+- **Offline / cache:** Games, standings and league leaders are cached on disk. When the network fails, the app uses cached data (up to 24h) and shows **"Offline – data from cache"** in the header so you can keep browsing
+- **Disk cache:** Config and cache under the same base directory: `cache/` for standings, leaders and games (1h TTL for fresh data; 24h for offline fallback)
 
 ## Requirements
 
@@ -27,11 +30,22 @@ TUI (Terminal User Interface) to follow NBA games, standings, season leaders, an
 
 ## Installation
 
+**From source:**
+
 ```bash
 git clone https://github.com/douglasdamasio/nba-terminal.git
 cd nba-terminal
 pip install -r requirements.txt
 ```
+
+**With Homebrew (macOS):**
+
+```bash
+brew tap douglasdamasio/nba-terminal
+brew install nba-terminal
+```
+
+See [docs/HOMEBREW.md](docs/HOMEBREW.md) for publishing or maintaining the Homebrew formula.
 
 ## Usage
 
@@ -72,9 +86,15 @@ python -m src.main --export-standings csv  # standings as CSV
 | `?` / `H` | Help (shortcut list) |
 | `Q` | Quit |
 
+In **box score**: [A]/[H]/[B] switch team view, [1]/[2] team page, [↑][↓] select player, [Enter] game stats, **[P] player page** (season + recent games), [Q] back.
+
 ## Configuration
 
-Config file: `~/.config/nba-terminal/config.json`. Fields:
+**Config directory (by OS):**
+- **Windows:** `%APPDATA%\\nba-terminal\\` (e.g. `C:\\Users\\You\\AppData\\Roaming\\nba-terminal\\`)
+- **Linux / macOS:** `~/.config/nba-terminal/` (or `$XDG_CONFIG_HOME/nba-terminal/` if set)
+
+Config file: `config.json` inside that directory. Fields:
 
 - `language`: `"en"` or `"pt"`
 - `refresh_interval_seconds`: 10, 15, 30, 60, 120, or 0 (off)
@@ -84,6 +104,7 @@ Config file: `~/.config/nba-terminal/config.json`. Fields:
 - `refresh_mode`: `"fixed"` or `"auto"` (auto = 30 s when games live, 120 s otherwise)
 - `timezone`: `"localtime"`, `"America/Sao_Paulo"`, `"America/New_York"`, `"Europe/London"` (for display times)
 - `theme`: `"default"`, `"high_contrast"`, or `"light"`
+- `layout_mode`: `"auto"` (by screen width), `"compact"`, or `"wide"`
 
 ## Project structure
 
