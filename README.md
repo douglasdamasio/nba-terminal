@@ -6,6 +6,16 @@ TUI (Terminal User Interface) to follow NBA games, standings, season leaders, an
 
 **Plataforma:** suporte a **macOS, Linux e Windows**. Config e cache usam diretórios padrão por OS (veja [Configuration](#configuration)).
 
+## Screenshots
+
+| Dashboard | Box score |
+|-----------|-----------|
+| ![Dashboard](screenshots/dashboard.png) | ![Box score](screenshots/boxscore.png) |
+
+| Standings | Team page |
+|-----------|-----------|
+| ![Standings](screenshots/standings.png) | ![Team page](screenshots/team-page.png) |
+
 ## Features
 
 - **Dashboard:** Today's games (in progress, not started, final) with score and time; highlight for favorite team
@@ -17,6 +27,7 @@ TUI (Terminal User Interface) to follow NBA games, standings, season leaders, an
 - **Settings (C):** Language (EN/PT), refresh interval (10/15/30/60/120 s or off), refresh mode (fixed or auto), favorite team, game order, theme (default, high contrast, light), and **layout** (auto, compact, wide); data saved in the [config directory](#configuration) for your OS
 - **Filter and sort:** `F` to filter only your team's games; sort by time or “favorite first”
 - **Help:** `?` or `H` to see all shortcuts
+- **CLI exports:** `-t` / `-s` / `-l` for today, standings, last results; `-n` / `-a` for a team's next or last games; `--export-games`, `--export-standings` (json/csv); `-b <game_id>` for box score export (json/csv)
 - **Network error:** On load failure the header shows a short message and “[R] Retry”
 - **Offline / cache:** Games, standings and league leaders are cached on disk. When the network fails, the app uses cached data (up to 24h) and shows **"Offline – data from cache"** in the header so you can keep browsing
 - **Disk cache:** Config and cache under the same base directory: `cache/` for standings, leaders and games (1h TTL for fresh data; 24h for offline fallback)
@@ -38,11 +49,13 @@ cd nba-terminal
 pip install -r requirements.txt
 ```
 
-**With Homebrew (macOS):**
+**With Homebrew (macOS):** Uses Python 3.12. After install, run `nba-terminal` (or `nba-terminal --help` for CLI options).
 
 ```bash
 brew tap douglasdamasio/nba-terminal
 brew install nba-terminal
+nba-terminal          # open TUI
+nba-terminal --help   # CLI options
 ```
 
 See [docs/HOMEBREW.md](docs/HOMEBREW.md) for publishing or maintaining the Homebrew formula.
@@ -60,14 +73,20 @@ python src/main.py
 **CLI mode (text output and exit):** Run `python -m src.main --help` to see all options.
 
 ```bash
-python -m src.main -t          # today's games
-python -m src.main -s          # standings (East/West)
-python -m src.main -l          # last results (most recent day with games)
-python -m src.main --export-games json     # today's games as JSON
-python -m src.main --export-games csv     # today's games as CSV
-python -m src.main --export-standings json # standings as JSON
-python -m src.main --export-standings csv  # standings as CSV
+python -m src.main -t                    # today's games
+python -m src.main -s                    # standings (East/West)
+python -m src.main -l                    # last results (most recent day with games)
+python -m src.main -n LAL                # next/upcoming games for a team (tricode)
+python -m src.main -a BOS               # last/recent games for a team (tricode)
+python -m src.main --export-games json   # today's games as JSON
+python -m src.main --export-games csv    # today's games as CSV
+python -m src.main --export-standings json  # standings as JSON
+python -m src.main --export-standings csv   # standings as CSV
+python -m src.main -b 0042400123         # export box score by game ID (JSON)
+python -m src.main -b 0042400123 --export-boxscore-format csv  # box score as CSV
 ```
+
+After **Homebrew** install, use the `nba-terminal` command (e.g. `nba-terminal --help`, `nba-terminal -t`).
 
 ## Shortcuts (TUI mode)
 
@@ -111,18 +130,21 @@ Config file: `config.json` inside that directory. Fields:
 ```
 nba/
 ├── src/
-│   ├── main.py         # Entry point, main loop, CLI (typer)
-│   ├── config.py       # Config and i18n (pydantic AppConfig)
-│   ├── api.py          # NBA API client, cache, retry (tenacity), rate limit
-│   ├── core.py         # Pure logic: categorize_games, format_live_clock, game_index_label
-│   ├── key_handlers.py # Key → action mapping (quit, refresh, game:N, etc.)
-│   ├── constants.py    # Teams, colors, stats, REFRESH_INTERVAL_CHOICES
+│   ├── main.py           # Entry point, main loop, CLI (typer)
+│   ├── config.py         # Config and i18n (pydantic AppConfig)
+│   ├── api.py            # NBA API client, disk cache, retry (tenacity), rate limit
+│   ├── core.py           # Pure logic: categorize_games, format_live_clock, game_index_label
+│   ├── key_handlers.py   # Key → action mapping (quit, refresh, game:N, etc.)
+│   ├── constants.py      # Teams, colors, stats, REFRESH_INTERVAL_CHOICES
+│   ├── cli_formatters.py # CLI text output and JSON/CSV exports (games, standings, box score)
+│   ├── logging_config.py # Logging setup (NBA_DEBUG env)
 │   └── ui/
 │       ├── dashboard.py  # Dashboard, games and standings
 │       ├── screens.py    # Config, date, favorite
 │       ├── help.py       # Help screen
 │       ├── teams.py      # Team list and team page
 │       ├── boxscore.py   # Game box score
+│       ├── player.py     # Player page (season stats, recent games)
 │       ├── colors.py     # Team colors
 │       └── helpers.py    # UI helpers
 ├── tests/
@@ -138,12 +160,12 @@ nba/
 - [tenacity](https://tenacity.readthedocs.io/) – retry with backoff for API calls
 - [cachetools](https://cachetools.readthedocs.io/) – in-memory cache with TTL
 - [pydantic](https://docs.pydantic.dev/) – config validation (`AppConfig`)
-- [typer](https://typer.tiangolo.com/) – CLI with typed options and help (`-t`, `-s`, `-l`, `--export-games`, `--export-standings`)
+- [typer](https://typer.tiangolo.com/) – CLI with typed options and help (`-t`, `-s`, `-l`, `-n`, `-a`, `--export-games`, `--export-standings`, `--export-boxscore`)
 
 ## Changelog and improvements
 
-- [CHANGELOG.md](CHANGELOG.md) – version history
-- [docs/MELHORIAS.md](docs/MELHORIAS.md) – improvement backlog (done and planned)
+- [CHANGELOG.md](CHANGELOG.md) – version history and improvement backlog (done and planned)
+- [docs/HOMEBREW.md](docs/HOMEBREW.md) – how to publish and update the Homebrew formula
 
 ## License
 

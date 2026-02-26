@@ -14,10 +14,11 @@ from typing import Optional
 from datetime import datetime, timezone, timedelta
 from dateutil import parser
 
+# Ensure src directory is on path so "import config" etc. work when run as python -m src.main
 if __package__ == "src":
-    _app_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    if _app_root not in sys.path:
-        sys.path.insert(0, _app_root)
+    _src_dir = os.path.dirname(os.path.abspath(__file__))
+    if _src_dir not in sys.path:
+        sys.path.insert(0, _src_dir)
 
 import typer
 
