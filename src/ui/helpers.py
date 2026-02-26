@@ -1,5 +1,33 @@
-"""UI helpers: safe_addstr, wait_key, team name formatting, and loading bar."""
+"""UI helpers: safe_addstr, wait_key, team name formatting, loading bar, and scroll keys."""
 import curses
+
+# Keys that trigger page scroll (up/down). Use U/D so keyboards without PgUp/PgDn work.
+PAGE_SCROLL_UP_KEYS = (curses.KEY_PPAGE, ord("u"), ord("U"))
+PAGE_SCROLL_DOWN_KEYS = (curses.KEY_NPAGE, ord("d"), ord("D"))
+
+
+def apply_page_scroll_key(key, scroll_offset, view_height, content_height):
+    """
+    If key is page-scroll up or down, return new scroll offset. Otherwise return None.
+    Reusable for any scrollable screen (help, team page, etc.).
+    """
+    if view_height <= 0 or content_height <= 0:
+        return None
+    page_size = max(1, view_height // 2)
+    max_offset = max(0, content_height - view_height)
+    if key in PAGE_SCROLL_UP_KEYS:
+        return max(0, scroll_offset - page_size)
+    if key in PAGE_SCROLL_DOWN_KEYS:
+        return min(max_offset, scroll_offset + page_size)
+    return None
+
+
+def clamp_scroll_offset(scroll_offset, view_height, content_height):
+    """Clamp scroll offset so the visible window stays within content. Reusable for any scrollable view."""
+    if view_height <= 0 or content_height <= view_height:
+        return 0
+    max_offset = content_height - view_height
+    return max(0, min(scroll_offset, max_offset))
 
 
 def draw_loading_bar(stdscr, row, width, progress=0.0):

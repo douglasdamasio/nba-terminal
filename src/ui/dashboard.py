@@ -77,8 +77,9 @@ def draw_game_row(stdscr, row, game, i, width, cfg, color_ctx, tz_info=None, lay
             stdscr.attroff(curses.A_BOLD | curses.A_REVERSE)
         stdscr.addstr(row, x + len(home_display), f"  {placar}  [{status}]  {time_str}")
         if is_lakers_game:
+            my_team_label = " " + config.get_text(cfg, "my_team_label") + " "
             stdscr.attron(curses.A_BOLD | curses.A_REVERSE)
-            stdscr.addstr(row, x + len(home_display) + len(f"  {placar}  [{status}]  {time_str}"), " *MY TEAM*")
+            stdscr.addstr(row, x + len(home_display) + len(f"  {placar}  [{status}]  {time_str}"), my_team_label)
             stdscr.attroff(curses.A_BOLD | curses.A_REVERSE)
     except curses.error:
         try:
@@ -102,7 +103,7 @@ def draw_splash(stdscr, message="Loading...", progress=0.0):
         pass
 
 
-def _draw_dashboard_header(stdscr, width, game_date_str, live_str, em_andamento, err, cfg=None):
+def _draw_dashboard_header(stdscr, width, game_date_str, live_str, em_andamento, err, cfg=None, refreshing_msg=None, favorite_notification=None):
     row = 0
     try:
         header_left = f" NBA Terminal App - {datetime.now().strftime('%H:%M:%S')} "
@@ -112,9 +113,15 @@ def _draw_dashboard_header(stdscr, width, game_date_str, live_str, em_andamento,
         if pos + len(date_info) <= width - 1:
             stdscr.addstr(row, pos, date_info, curses.A_BOLD)
             pos += len(date_info)
-        if live_str and pos + len(live_str) <= width - 1:
+        if refreshing_msg and pos + len(refreshing_msg) <= width - 1:
+            stdscr.addstr(row, pos, refreshing_msg[: width - pos - 1], curses.A_BOLD | curses.color_pair(3))
+            pos += len(refreshing_msg)
+        elif live_str and pos + len(live_str) <= width - 1:
             attr = curses.A_BOLD | curses.color_pair(2) if em_andamento else curses.A_DIM
             stdscr.addstr(row, pos, live_str[: width - pos - 1], attr)
+            pos += len(live_str)
+        if favorite_notification and pos + len(favorite_notification) <= width - 1:
+            stdscr.addstr(row, pos, (" " + favorite_notification)[: width - pos - 1], curses.A_BOLD | curses.color_pair(2))
         row += 1
         if err:
             retry_msg = config.get_text(cfg or {}, "error_retry").format(err=err)
@@ -231,15 +238,15 @@ def _draw_standings_wide(stdscr, table_start, height, east, west, col_width, col
 STANDINGS_NARROW_ROWS = 36  # East: 2 header + 15 teams; blank; West: 2 header + 15 teams
 
 
-def _draw_standings_narrow(stdscr, table_start, east, west, height, color_ctx, standings_scroll=0):
+def _draw_standings_narrow(stdscr, table_start, east, west, height, color_ctx, standings_scroll=0, footer_lines=1):
     """Draw standings in narrow/compact layout with optional scroll. Only draws visible rows."""
-    visible = min(STANDINGS_NARROW_ROWS, max(0, height - table_start - 1))
+    visible = min(STANDINGS_NARROW_ROWS, max(0, height - table_start - footer_lines))
     if visible <= 0:
         return
 
     for L in range(standings_scroll, min(standings_scroll + visible, STANDINGS_NARROW_ROWS)):
         screen_row = table_start + (L - standings_scroll)
-        if screen_row >= height - 2:
+        if screen_row >= height - footer_lines - 1:
             break
         try:
             if L == 0:
@@ -284,16 +291,48 @@ def _draw_dashboard_footer(stdscr, height, width, cfg, filter_favorite_only=Fals
     filter_label = config.get_text(cfg, "footer_filter")
     if filter_favorite_only:
         filter_label = filter_label + " *"
-    footer = f" [1-9,0,a-j] {config.get_text(cfg, 'footer_games')}  [T] {config.get_text(cfg, 'footer_teams')}  [L] {config.get_text(cfg, 'footer_lakers')}  [G] {config.get_text(cfg, 'footer_date')}  [,][.]  [D] {config.get_text(cfg, 'footer_today')}  [R] {config.get_text(cfg, 'footer_refresh')}  [F] {filter_label}  [C] {config.get_text(cfg, 'footer_config')}  [?] {config.get_text(cfg, 'footer_help')}  [Q] {config.get_text(cfg, 'footer_quit')} "
+    line1 = f" [1-9,0,a-j] {config.get_text(cfg, 'footer_games')}  [T] {config.get_text(cfg, 'footer_teams')}  [L] {config.get_text(cfg, 'footer_lakers')}  [G] {config.get_text(cfg, 'footer_date')}  [,][.]  [D] {config.get_text(cfg, 'footer_today')}  [R] {config.get_text(cfg, 'footer_refresh')} "
+    line2 = f" [F] {filter_label}  [C] {config.get_text(cfg, 'footer_config')}  [?] {config.get_text(cfg, 'footer_help')}  [Q] {config.get_text(cfg, 'footer_quit')} "
     if scroll_hint:
-        footer += " [↑][↓] Scroll standings "
+        line2 += " [↑][↓] Scroll standings "
     try:
-        stdscr.addstr(height - 1, 0, footer[: width - 1], curses.A_DIM)
+        if width >= 100:
+            footer = line1 + line2
+            stdscr.addstr(height - 1, 0, footer[: width - 1], curses.A_DIM)
+        else:
+            stdscr.addstr(height - 2, 0, line1[: width - 1], curses.A_DIM)
+            stdscr.addstr(height - 1, 0, line2[: width - 1], curses.A_DIM)
     except curses.error:
         pass
 
 
-def draw_dashboard(stdscr, games, scoreboard_date, east, west, game_date_str, cfg, api_client, color_ctx, last_refresh=None, league_leaders=None, filter_favorite_only=False, game_sort=None, tz_info=None, standings_scroll=0):
+def _favorite_notification(all_games, em_andamento, nao_comecaram, fav, cfg, tz_info):
+    """Return short message if favorite team is playing now or starting soon, else None."""
+    if not fav or not cfg:
+        return None
+    for g in em_andamento:
+        if _game_has_team(g, fav):
+            return config.get_text(cfg, "favorite_playing_now").strip()
+    now = datetime.now(tz_info) if tz_info else datetime.now().astimezone()
+    for g in nao_comecaram:
+        if not _game_has_team(g, fav):
+            continue
+        try:
+            gt = parser.parse(g.get("gameTimeUTC") or "").replace(tzinfo=timezone.utc)
+            if tz_info:
+                gt = gt.astimezone(tz_info)
+            else:
+                gt = gt.astimezone()
+            delta_mins = (gt - now).total_seconds() / 60
+            if 0 <= delta_mins <= 60:
+                mins = int(delta_mins)
+                return config.get_text(cfg, "favorite_starting_soon").format(mins=mins).strip()
+        except Exception:
+            pass
+    return None
+
+
+def draw_dashboard(stdscr, games, scoreboard_date, east, west, game_date_str, cfg, api_client, color_ctx, last_refresh=None, league_leaders=None, filter_favorite_only=False, game_sort=None, tz_info=None, standings_scroll=0, refresh_in_progress=False):
     height, width = stdscr.getmaxyx()
     stdscr.clear()
 
@@ -313,15 +352,19 @@ def draw_dashboard(stdscr, games, scoreboard_date, east, west, game_date_str, cf
 
     all_games = em_andamento + nao_comecaram + finalizados
 
-    if last_refresh is not None:
+    if refresh_in_progress:
+        live_str = " " + config.get_text(cfg or {}, "header_updating") + " "
+    elif last_refresh is not None:
         refresh_dt = datetime.fromtimestamp(last_refresh, tz=timezone.utc)
         refresh_dt = refresh_dt.astimezone(tz_info) if tz_info else refresh_dt.astimezone(tz=None)
         live_str = f" \u2022 LIVE \u2022 Updated at {refresh_dt.strftime('%H:%M:%S')} " if em_andamento else f" \u2022 Last update: {refresh_dt.strftime('%H:%M')} "
     else:
         live_str = ""
 
+    favorite_notification = _favorite_notification(all_games, em_andamento, nao_comecaram, fav, cfg, tz_info)
+    refreshing_msg = (" " + config.get_text(cfg or {}, "header_updating") + " ") if refresh_in_progress else None
     err = api_client.get_last_error()
-    row = _draw_dashboard_header(stdscr, width, game_date_str, live_str, em_andamento, err, cfg)
+    row = _draw_dashboard_header(stdscr, width, game_date_str, live_str, em_andamento, err, cfg, refreshing_msg=refreshing_msg, favorite_notification=favorite_notification)
     game_idx = 0
     layout = config.layout_mode(cfg) if cfg else "auto"
 
@@ -344,14 +387,15 @@ def draw_dashboard(stdscr, games, scoreboard_date, east, west, game_date_str, cf
     use_wide_standings = (layout == "wide") or (layout == "auto" and width >= 100)
     standings_scroll = standings_scroll or 0
 
+    footer_lines = 2 if width < 100 else 1
     if use_wide_standings:
         _draw_standings_wide(stdscr, table_start, height, east, west, col_width, color_ctx)
         max_standings_scroll = 0
     else:
-        visible_standings = max(0, height - table_start - 1)
+        visible_standings = max(0, height - table_start - footer_lines)
         max_standings_scroll = max(0, STANDINGS_NARROW_ROWS - visible_standings)
         standings_scroll = min(max(standings_scroll, 0), max_standings_scroll)
-        _draw_standings_narrow(stdscr, table_start, east, west, height, color_ctx, standings_scroll=standings_scroll)
+        _draw_standings_narrow(stdscr, table_start, east, west, height, color_ctx, standings_scroll=standings_scroll, footer_lines=footer_lines)
 
     _draw_dashboard_footer(stdscr, height, width, cfg, filter_favorite_only, scroll_hint=not use_wide_standings and max_standings_scroll > 0)
     stdscr.refresh()

@@ -6,7 +6,7 @@ import config
 
 
 def show_help(stdscr, cfg):
-    """Display the help screen with all shortcuts and full descriptions. PgUp/PgDn to scroll. Any key closes."""
+    """Display the help screen with all shortcuts. [U][D] or PgUp/PgDn to scroll. Any other key closes."""
     height, width = stdscr.getmaxyx()
     stdscr.clear()
 
@@ -55,7 +55,7 @@ def show_help(stdscr, cfg):
                     stdscr.addstr(content_start + i, 0, line)
             footer = f" {press_key} "
             if total_lines > view_height:
-                footer = " [PgUp][PgDn] Scroll  " + footer
+                footer = config.get_text(cfg, "team_page_scroll_hint") + "  " + footer
             stdscr.addstr(height - 1, 0, footer[: width - 1], curses.A_DIM)
         except curses.error:
             pass
@@ -64,9 +64,8 @@ def show_help(stdscr, cfg):
         key = stdscr.getch()
         stdscr.nodelay(True)
 
-        if key == curses.KEY_PPAGE:
-            scroll_offset = max(0, scroll_offset - max(1, view_height // 2))
-        elif key == curses.KEY_NPAGE:
-            scroll_offset = min(max(0, total_lines - view_height), scroll_offset + max(1, view_height // 2))
+        new_offset = apply_page_scroll_key(key, scroll_offset, view_height, total_lines)
+        if new_offset is not None:
+            scroll_offset = new_offset
         else:
             break

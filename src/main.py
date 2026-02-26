@@ -7,6 +7,7 @@ import curses
 import sys
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 from typing import Optional
 from datetime import datetime, timezone, timedelta
@@ -17,14 +18,14 @@ import typer
 import config
 import constants
 from key_handlers import get_action
-from core import categorize_games, format_live_clock
+from core import categorize_games
 from ui.dashboard import draw_dashboard, draw_splash
 from ui import colors
 from ui.screens import show_config_screen, prompt_date
 from ui.teams import show_teams_picker, show_team_page
 from ui.boxscore import show_game_stats
 from ui.help import show_help
-from ui.helpers import format_team_name
+import cli_formatters
 
 
 def main(stdscr, cfg, api_client, color_ctx):
@@ -61,9 +62,13 @@ def main(stdscr, cfg, api_client, color_ctx):
 
     def load_initial_data() -> None:
         try:
-            games, scoreboard_date = api_client.fetch_games(game_date_iso)
-            east, west = api_client.fetch_standings()
-            league_leaders = api_client.fetch_league_leaders()
+            with ThreadPoolExecutor(max_workers=3) as executor:
+                fut_games = executor.submit(api_client.fetch_games, game_date_iso)
+                fut_standings = executor.submit(api_client.fetch_standings)
+                fut_leaders = executor.submit(api_client.fetch_league_leaders)
+                games, scoreboard_date = fut_games.result()
+                east, west = fut_standings.result()
+                league_leaders = fut_leaders.result()
             result_holder[0] = (games, scoreboard_date, east, west, league_leaders)
         except Exception as e:
             load_error_holder[0] = e
@@ -106,6 +111,7 @@ def main(stdscr, cfg, api_client, color_ctx):
     filter_favorite_only = False
     game_sort_mode = config.game_sort(cfg)
     standings_scroll = 0
+    refresh_in_progress = False
 
     def _effective_refresh_interval(has_live: bool) -> int:
         base = config.refresh_interval(cfg)
@@ -115,14 +121,16 @@ def main(stdscr, cfg, api_client, color_ctx):
             return 30 if has_live else 120
         return base
 
+    tz_info = config.get_tzinfo(cfg)
+
     while True:
         refresh_interval = _effective_refresh_interval(bool(em_andamento))
-        tz_info = config.get_tzinfo(cfg)
         result = draw_dashboard(
             stdscr, games, scoreboard_date, east, west, game_date.isoformat(), cfg, api_client, color_ctx,
             last_refresh=last_refresh, league_leaders=league_leaders,
             filter_favorite_only=filter_favorite_only, game_sort=game_sort_mode,
             tz_info=tz_info, standings_scroll=standings_scroll,
+            refresh_in_progress=refresh_in_progress,
         )
         game_list, max_standings_scroll = result[0], result[1] if isinstance(result, tuple) else 0
 
@@ -136,12 +144,20 @@ def main(stdscr, cfg, api_client, color_ctx):
         if action == "quit":
             break
         if action == "refresh":
-            games, scoreboard_date = api_client.fetch_games(game_date.isoformat())
-            east, west = api_client.fetch_standings()
-            league_leaders = api_client.fetch_league_leaders()
-            em_andamento, nao_comecaram, finalizados = categorize_games(games)
-            game_list = em_andamento + nao_comecaram + finalizados
-            last_refresh = time.time()
+            refresh_in_progress = True
+            try:
+                with ThreadPoolExecutor(max_workers=3) as executor:
+                    fut_games = executor.submit(api_client.fetch_games, game_date.isoformat())
+                    fut_standings = executor.submit(api_client.fetch_standings)
+                    fut_leaders = executor.submit(api_client.fetch_league_leaders)
+                    games, scoreboard_date = fut_games.result()
+                    east, west = fut_standings.result()
+                    league_leaders = fut_leaders.result()
+                em_andamento, nao_comecaram, finalizados = categorize_games(games)
+                game_list = em_andamento + nao_comecaram + finalizados
+                last_refresh = time.time()
+            finally:
+                refresh_in_progress = False
         elif key == -1 and refresh_interval > 0 and em_andamento and (time.time() - last_refresh) >= refresh_interval:
             games, scoreboard_date = api_client.fetch_games(game_date.isoformat())
             em_andamento, nao_comecaram, finalizados = categorize_games(games)
@@ -215,134 +231,37 @@ def main(stdscr, cfg, api_client, color_ctx):
             stdscr.nodelay(True)
 
 
-def _format_game_line(game):
-    away = game.get("awayTeam", {})
-    home = game.get("homeTeam", {})
-    away_name = format_team_name(away)
-    home_name = format_team_name(home)
-    away_t = away.get("teamTricode", "")
-    home_t = home.get("teamTricode", "")
-    away_s = away.get("score") or 0
-    home_s = home.get("score") or 0
-    status = game.get("gameStatusText", "")
-    if away_s or home_s:
-        status = format_live_clock(game) or status
-    try:
-        game_time = parser.parse(game["gameTimeUTC"]).replace(tzinfo=timezone.utc).astimezone(tz=None)
-        time_str = game_time.strftime("%H:%M")
-    except Exception:
-        time_str = "-"
-    placar = f"{away_s} x {home_s}" if (away_s or home_s) else "vs"
-    return f"{away_t} {away_name} @ {home_t} {home_name}  {placar}  [{status}]  {time_str}"
-
-
-def _format_upcoming_team_game(date_str, game):
-    away = game.get("awayTeam", {})
-    home = game.get("homeTeam", {})
-    away_name = format_team_name(away)
-    home_name = format_team_name(home)
-    try:
-        game_time = parser.parse(game.get("gameTimeUTC") or "").replace(tzinfo=timezone.utc).astimezone(tz=None)
-        time_str = game_time.strftime("%H:%M")
-    except Exception:
-        time_str = "--:--"
-    return f"{date_str}  {time_str}  {away_name} @ {home_name}"
-
-
-def _format_past_team_game(row):
-    date_str = row.get("GAME_DATE", "")
-    matchup = row.get("MATCHUP", "-")
-    wl = row.get("WL", "")
-    pts = row.get("PTS", "")
-    return f"{date_str}  {matchup}  {wl}  ({pts} pts)"
-
-
-def _print_standings_text(east, west):
-    def print_conf(conf, title):
-        if conf is None or conf.empty:
-            return
-        print(title)
-        print(f"  {'#':<2} {'Team':<28} {'W':<4} {'L':<4} {'PCT':<6}")
-        print("  " + "-" * 46)
-        for _, line in conf.head(15).iterrows():
-            rank = int(line["PlayoffRank"])
-            team = f"{line['TeamCity']} {line['TeamName']}"
-            w, l_ = int(line["WINS"]), int(line["LOSSES"])
-            pct = line["WinPCT"]
-            print(f"  {rank:<2} {team[:26]:<28} {w:<4} {l_:<4} {pct:.1%}")
-        print()
-
-    print_conf(east, "=== EAST ===")
-    print_conf(west, "=== WEST ===")
-
-
-def _export_games_json(games, date_str):
-    import json
-    out = {"date": date_str, "games": games}
-    print(json.dumps(out, indent=2, ensure_ascii=False))
-
-
-def _export_games_csv(games, date_str):
-    import csv
-    import sys
-    writer = csv.writer(sys.stdout)
-    writer.writerow(["date", "awayTeam", "homeTeam", "awayScore", "homeScore", "status"])
-    for g in games:
-        away = g.get("awayTeam", {})
-        home = g.get("homeTeam", {})
-        writer.writerow([
-            date_str,
-            away.get("teamTricode", ""),
-            home.get("teamTricode", ""),
-            away.get("score", ""),
-            home.get("score", ""),
-            g.get("gameStatusText", ""),
-        ])
-
-
-def _export_standings_json(east, west):
-    import json
-    out = {}
-    if east is not None and not east.empty:
-        out["east"] = east.to_dict(orient="records")
-    if west is not None and not west.empty:
-        out["west"] = west.to_dict(orient="records")
-    print(json.dumps(out, indent=2, ensure_ascii=False))
-
-
-def _export_standings_csv(east, west):
-    import csv
-    import sys
-    writer = csv.writer(sys.stdout)
-    writer.writerow(["conference", "rank", "team", "wins", "losses", "pct"])
-    for conf_name, conf in [("East", east), ("West", west)]:
-        if conf is not None and not getattr(conf, "empty", True):
-            for _, row in conf.head(15).iterrows():
-                team = f"{row['TeamCity']} {row['TeamName']}"
-                writer.writerow([
-                    conf_name,
-                    int(row["PlayoffRank"]),
-                    team,
-                    int(row["WINS"]),
-                    int(row["LOSSES"]),
-                    f"{row['WinPCT']:.3f}",
-                ])
-
-
 def run_cli(args, api_client):
+    cfg = config.load_config()
+    tz_info = config.get_tzinfo(cfg)
     if getattr(args, "export_games", None):
         games, date_str = api_client.fetch_games()
         if args.export_games == "json":
-            _export_games_json(games or [], date_str or "")
+            cli_formatters.export_games_json(games or [], date_str or "")
         else:
-            _export_games_csv(games or [], date_str or "")
+            cli_formatters.export_games_csv(games or [], date_str or "")
         return
     if getattr(args, "export_standings", None):
         east, west = api_client.fetch_standings()
         if args.export_standings == "json":
-            _export_standings_json(east, west)
+            cli_formatters.export_standings_json(east, west)
         else:
-            _export_standings_csv(east, west)
+            cli_formatters.export_standings_csv(east, west)
+        return
+    if getattr(args, "export_boxscore", None):
+        game_id = (args.export_boxscore or "").strip()
+        fmt = getattr(args, "export_boxscore_format", "json") or "json"
+        if not game_id:
+            print("Error: game ID required for --export-boxscore", file=sys.stderr)
+            return
+        game_data = api_client.get_box_score(game_id)
+        if game_data is None:
+            print("Error: box score not found or failed to load.", file=sys.stderr)
+            return
+        if fmt == "json":
+            cli_formatters.export_boxscore_json(game_data)
+        else:
+            cli_formatters.export_boxscore_csv(game_data)
         return
     if args.today_games:
         games, date_str = api_client.fetch_games()
@@ -352,14 +271,14 @@ def run_cli(args, api_client):
             print("No games or failed to load.")
         else:
             for g in games:
-                print(_format_game_line(g))
+                print(cli_formatters.format_game_line(g, tz_info))
         return
     if args.standings:
         east, west = api_client.fetch_standings()
         if east is None and west is None:
             print("Failed to load standings.")
         else:
-            _print_standings_text(east, west)
+            cli_formatters.print_standings_text(east, west)
         return
     if args.last_results:
         today = datetime.now().date()
@@ -376,7 +295,7 @@ def run_cli(args, api_client):
             print("No games found in the last {} days or failed to load.".format(max_days_back))
         else:
             for g in games:
-                print(_format_game_line(g))
+                print(cli_formatters.format_game_line(g, tz_info))
         return
     if getattr(args, "team_next", None):
         tricode = (args.team_next or "").strip().upper()
@@ -388,7 +307,7 @@ def run_cli(args, api_client):
             print("No upcoming games found for this team.")
         else:
             for date_str, g in upcoming:
-                print(_format_upcoming_team_game(date_str, g))
+                print(cli_formatters.format_upcoming_team_game(date_str, g, tz_info))
         return
     if getattr(args, "team_last", None):
         tricode = (args.team_last or "").strip().upper()
@@ -404,7 +323,7 @@ def run_cli(args, api_client):
             print("No recent games found for this team.")
         else:
             for row in past:
-                print(_format_past_team_game(row))
+                print(cli_formatters.format_past_team_game(row))
         return
 
 
@@ -451,18 +370,22 @@ def main_callback(
     team_last: Optional[str] = typer.Option(None, "-a", "--team-last", help="Last/recent games for a team (e.g. LAL, BOS)"),
     export_games: Optional[str] = typer.Option(None, "-e", "--export-games", help="Export today's games: json or csv"),
     export_standings: Optional[str] = typer.Option(None, "-x", "--export-standings", help="Export standings: json or csv"),
+    export_boxscore: Optional[str] = typer.Option(None, "-b", "--export-boxscore", help="Export box score by game ID (e.g. 0042400123)"),
+    export_boxscore_format: Optional[str] = typer.Option("json", "--export-boxscore-format", help="Format for --export-boxscore: json or csv"),
 ) -> None:
     if export_games is not None and export_games not in ("json", "csv"):
         raise typer.BadParameter("--export-games must be json or csv")
     if export_standings is not None and export_standings not in ("json", "csv"):
         raise typer.BadParameter("--export-standings must be json or csv")
+    if export_boxscore_format is not None and export_boxscore_format not in ("json", "csv"):
+        raise typer.BadParameter("--export-boxscore-format must be json or csv")
     if team_next is not None:
         team_next = _validate_tricode(team_next, "--team-next")
     if team_last is not None:
         team_last = _validate_tricode(team_last, "--team-last")
     if ctx.invoked_subcommand is not None:
         return
-    if today_games or standings or last_results or team_next or team_last or export_games or export_standings:
+    if today_games or standings or last_results or team_next or team_last or export_games or export_standings or export_boxscore:
         import api
         args = SimpleNamespace(
             today_games=today_games,
@@ -472,6 +395,8 @@ def main_callback(
             team_last=team_last,
             export_games=export_games,
             export_standings=export_standings,
+            export_boxscore=export_boxscore,
+            export_boxscore_format=export_boxscore_format or "json",
         )
         run_cli(args, api.ApiClient())
     else:

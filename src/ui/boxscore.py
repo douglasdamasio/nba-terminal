@@ -319,6 +319,63 @@ def show_player_stats(stdscr, player, team_data, tricode, color_ctx):
     wait_key(stdscr)
 
 
+def show_player_compare(stdscr, player_id_a, name_a, tricode_a, player_id_b, name_b, tricode_b, cfg, color_ctx, api_client):
+    """Show side-by-side comparison: season stats and recent games for two players."""
+    height, width = stdscr.getmaxyx()
+    stdscr.clear()
+    try:
+        info_a = api_client.fetch_player_info(int(player_id_a)) if player_id_a else None
+        info_b = api_client.fetch_player_info(int(player_id_b)) if player_id_b else None
+        log_a = api_client.fetch_player_game_log(int(player_id_a), limit=5) if player_id_a else []
+        log_b = api_client.fetch_player_game_log(int(player_id_b), limit=5) if player_id_b else []
+    except (TypeError, ValueError):
+        info_a = info_b = None
+        log_a = log_b = []
+
+    col_w = max(20, (width - 4) // 2)
+    safe_addstr(stdscr, 0, 0, " COMPARE PLAYERS ", curses.A_BOLD | curses.A_REVERSE, max_width=width)
+    stdscr.attron(curses.color_pair(color_ctx.get_team_highlight_pair(tricode_a or "")))
+    safe_addstr(stdscr, 1, 1, f" {name_a[: col_w - 2]} ", max_width=col_w)
+    stdscr.attroff(curses.color_pair(color_ctx.get_team_highlight_pair(tricode_a or "")))
+    stdscr.attron(curses.color_pair(color_ctx.get_team_highlight_pair(tricode_b or "")))
+    safe_addstr(stdscr, 1, col_w + 2, f" {name_b[: col_w - 2]} ", max_width=col_w)
+    stdscr.attroff(curses.color_pair(color_ctx.get_team_highlight_pair(tricode_b or "")))
+
+    row = 3
+    safe_addstr(stdscr, row, 0, config.get_text(cfg, "player_season_stats"), curses.A_BOLD | curses.A_REVERSE, max_width=width)
+    row += 1
+    pts_a = info_a.get("PTS", info_a.get("pts", "-")) if info_a else "-"
+    reb_a = info_a.get("REB", info_a.get("rebounds", "-")) if info_a else "-"
+    ast_a = info_a.get("AST", info_a.get("assists", "-")) if info_a else "-"
+    pts_b = info_b.get("PTS", info_b.get("pts", "-")) if info_b else "-"
+    reb_b = info_b.get("REB", info_b.get("rebounds", "-")) if info_b else "-"
+    ast_b = info_b.get("AST", info_b.get("assists", "-")) if info_b else "-"
+    safe_addstr(stdscr, row, 1, f"PTS: {pts_a}  REB: {reb_a}  AST: {ast_a}", max_width=col_w)
+    safe_addstr(stdscr, row, col_w + 2, f"PTS: {pts_b}  REB: {reb_b}  AST: {ast_b}", max_width=col_w)
+    row += 2
+
+    safe_addstr(stdscr, row, 0, config.get_text(cfg, "player_recent_games"), curses.A_BOLD | curses.A_REVERSE, max_width=width)
+    row += 1
+    for i in range(max(len(log_a), len(log_b))):
+        if row >= height - 2:
+            break
+        line_a = ""
+        if i < len(log_a):
+            g = log_a[i]
+            line_a = f"  {g.get('GAME_DATE','')} {g.get('MATCHUP','')} {g.get('PTS','')} pts"
+        line_b = ""
+        if i < len(log_b):
+            g = log_b[i]
+            line_b = f"  {g.get('GAME_DATE','')} {g.get('MATCHUP','')} {g.get('PTS','')} pts"
+        safe_addstr(stdscr, row, 1, line_a[: col_w - 1], max_width=col_w)
+        safe_addstr(stdscr, row, col_w + 2, line_b[: col_w - 1], max_width=col_w)
+        row += 1
+
+    safe_addstr(stdscr, height - 1, 0, " Press any key to go back ", curses.A_DIM, max_width=width)
+    stdscr.refresh()
+    wait_key(stdscr)
+
+
 def show_game_stats(stdscr, game, cfg, color_ctx, api_client):
     game_id = game.get("gameId")
     if not game_id:
@@ -355,6 +412,7 @@ def show_game_stats(stdscr, game, cfg, color_ctx, api_client):
     view_mode = "both"
     player_offset = 0
     selected_player_idx = 0
+    compare_first = None  # None or (person_id, name, tricode)
 
     # Horizontal split: left = game stats (quarters + team stats), right = all players
     left_width = min(48, max(34, (width - 2) // 2))
@@ -400,8 +458,14 @@ def show_game_stats(stdscr, game, cfg, color_ctx, api_client):
                 player_offset = selected_player_idx - pad_height + 1
 
             _draw_players_list(stdscr, content_start_row, height, right_col, right_width, view_mode, away_tricode, home_tricode, all_players, player_offset, selected_player_idx, color_ctx)
-            hint = " [A][H][B] Teams  [1][2] Team  [↑][↓] [Enter] Stats  [P] Player  [Q] Back "
-            stdscr.addstr(height - 1, 0, hint[: width - 1], curses.A_DIM)
+            hint = " [A][H][B] Teams  [1][2] Team  [↑][↓] [Enter] Stats  [Q] Back "
+            if all_players and 0 <= selected_player_idx < len(all_players) and all_players[selected_player_idx][0] not in ("---", "STARTERS", "BENCH"):
+                hint += config.get_text(cfg, "boxscore_hint_player")
+            hint += " " + config.get_text(cfg, "boxscore_hint_compare")
+            try:
+                stdscr.addstr(height - 1, 0, hint[: width - 1], curses.A_DIM)
+            except curses.error:
+                pass
         except curses.error:
             pass
 
@@ -450,3 +514,20 @@ def show_game_stats(stdscr, game, cfg, color_ctx, api_client):
         elif key == ord("2"):
             tid = home.get("teamId") or constants.TRICODE_TO_TEAM_ID.get(home_tricode.upper())
             teams.show_team_page(stdscr, home_tricode, home_name, cfg, color_ctx, api_client, tid)
+        elif key in (ord("c"), ord("C")):
+            if not all_players or selected_player_idx < 0 or selected_player_idx >= len(all_players):
+                continue
+            p, team_data, tricode = all_players[selected_player_idx]
+            if p in ("---", "STARTERS", "BENCH"):
+                continue
+            person_id = p.get("personId") or p.get("playerId")
+            name = p.get("name", "-")
+            if person_id is None:
+                continue
+            if compare_first is None:
+                compare_first = (person_id, name, tricode)
+            else:
+                other_id, other_name, other_tricode = compare_first
+                if other_id != person_id:
+                    show_player_compare(stdscr, other_id, other_name, other_tricode, person_id, name, tricode, cfg, color_ctx, api_client)
+                compare_first = None

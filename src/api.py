@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone, timedelta
 from typing import Any, Callable, Optional, Tuple
 
@@ -378,22 +379,34 @@ class ApiClient:
             self._last_leaders_from_cache = False
             self._rate_limit()
             result = {"PTS": [], "REB": [], "AST": [], "TDBL": []}
-            for stat, col in [
-                (StatCategoryAbbreviation.pts, "PTS"),
-                (StatCategoryAbbreviation.reb, "REB"),
-                (StatCategoryAbbreviation.ast, "AST"),
-            ]:
-                try:
-                    def _do(s=stat, c=col):
-                        ldf = leagueleaders.LeagueLeaders(stat_category_abbreviation=s, timeout=constants.REQUEST_TIMEOUT).get_data_frames()[0]
-                        return [(p.get("PLAYER", "-"), p.get("TEAM", "-"), p.get(c, 0)) for _, p in ldf.head(3).iterrows()]
-                    result[col] = _with_retry(_do)
-                except Exception:
-                    pass
-            try:
-                result["TDBL"] = _with_retry(self._fetch_triple_double_leaders)
-            except Exception:
-                pass
+
+            def _fetch_pts():
+                ldf = leagueleaders.LeagueLeaders(stat_category_abbreviation=StatCategoryAbbreviation.pts, timeout=constants.REQUEST_TIMEOUT).get_data_frames()[0]
+                return "PTS", [(p.get("PLAYER", "-"), p.get("TEAM", "-"), p.get("PTS", 0)) for _, p in ldf.head(3).iterrows()]
+            def _fetch_reb():
+                ldf = leagueleaders.LeagueLeaders(stat_category_abbreviation=StatCategoryAbbreviation.reb, timeout=constants.REQUEST_TIMEOUT).get_data_frames()[0]
+                return "REB", [(p.get("PLAYER", "-"), p.get("TEAM", "-"), p.get("REB", 0)) for _, p in ldf.head(3).iterrows()]
+            def _fetch_ast():
+                ldf = leagueleaders.LeagueLeaders(stat_category_abbreviation=StatCategoryAbbreviation.ast, timeout=constants.REQUEST_TIMEOUT).get_data_frames()[0]
+                return "AST", [(p.get("PLAYER", "-"), p.get("TEAM", "-"), p.get("AST", 0)) for _, p in ldf.head(3).iterrows()]
+
+            with ThreadPoolExecutor(max_workers=4) as executor:
+                futures = [
+                    executor.submit(_with_retry, _fetch_pts),
+                    executor.submit(_with_retry, _fetch_reb),
+                    executor.submit(_with_retry, _fetch_ast),
+                    executor.submit(_with_retry, self._fetch_triple_double_leaders),
+                ]
+                for fut in as_completed(futures):
+                    try:
+                        data = fut.result()
+                        if isinstance(data, tuple) and len(data) == 2:
+                            result[data[0]] = data[1]
+                        elif isinstance(data, list):
+                            result["TDBL"] = data
+                    except Exception:
+                        pass
+
             self._cache_set(self._cache_leaders, "league_leaders", result)
             _disk_cache_set("league_leaders", {k: [list(t) for t in v] for k, v in result.items()})
             return result
@@ -435,27 +448,33 @@ class ApiClient:
         except Exception:
             return []
 
-    def fetch_team_upcoming_games(self, team_tricode: str, days: int = 14, limit: int = 10) -> list:
-        """Next/upcoming games for a team (by tricode). Includes today. Returns list of (date_str, game) with date and time."""
+    def fetch_team_upcoming_games(self, team_tricode: str, days: int = 7, limit: int = 10) -> list:
+        """Next/upcoming games for a team (by tricode). Includes today. Returns list of (date_str, game). Fetches up to `days` in parallel."""
         games = []
         today = datetime.now().date()
         tricode_upper = (team_tricode or "").strip().upper()
-        for d in range(0, days + 1):
+
+        def fetch_day(d: int):
+            date_str = (today + timedelta(days=d)).isoformat()
             try:
                 self._rate_limit()
-                date_str = (today + timedelta(days=d)).isoformat()
                 sb = scoreboardv3.ScoreboardV3(game_date=date_str, timeout=constants.REQUEST_TIMEOUT)
                 resp = sb.nba_response.get_dict()
+                out = []
                 for g in resp.get("scoreboard", {}).get("games", []):
                     away = g.get("awayTeam", {}).get("teamTricode", "")
                     home = g.get("homeTeam", {}).get("teamTricode", "")
                     if tricode_upper in (away, home):
-                        games.append((date_str, g))
-                        if len(games) >= limit:
-                            return games
+                        out.append((date_str, g))
+                return out
             except Exception:
-                pass
-        return games
+                return []
+
+        with ThreadPoolExecutor(max_workers=min(4, days + 1)) as executor:
+            futures = [executor.submit(fetch_day, d) for d in range(0, days + 1)]
+            for fut in as_completed(futures):
+                games.extend(fut.result())
+        return sorted(games, key=lambda x: (x[0], x[1].get("gameTimeUTC", "")))[:limit]
 
     def fetch_team_page_info(self, team_id):
         try:
