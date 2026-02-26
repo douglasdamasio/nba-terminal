@@ -291,7 +291,9 @@ def _draw_dashboard_footer(stdscr, height, width, cfg, filter_favorite_only=Fals
     filter_label = config.get_text(cfg, "footer_filter")
     if filter_favorite_only:
         filter_label = filter_label + " *"
-    line1 = f" [1-9,0,a-j] {config.get_text(cfg, 'footer_games')}  [T] {config.get_text(cfg, 'footer_teams')}  [L] {config.get_text(cfg, 'footer_lakers')}  [G] {config.get_text(cfg, 'footer_date')}  [,][.]  [D] {config.get_text(cfg, 'footer_today')}  [R] {config.get_text(cfg, 'footer_refresh')} "
+    fav_tricode = config.favorite_team(cfg)
+    fav_label = constants.TRICODE_TO_TEAM_NAME.get(fav_tricode, config.get_text(cfg, "footer_favorite"))
+    line1 = f" [1-9,0,a-j] {config.get_text(cfg, 'footer_games')}  [T] {config.get_text(cfg, 'footer_teams')}  [L] {fav_label}  [G] {config.get_text(cfg, 'footer_date')}  [,][.]  [D] {config.get_text(cfg, 'footer_today')}  [R] {config.get_text(cfg, 'footer_refresh')} "
     line2 = f" [F] {filter_label}  [C] {config.get_text(cfg, 'footer_config')}  [?] {config.get_text(cfg, 'footer_help')}  [Q] {config.get_text(cfg, 'footer_quit')} "
     if scroll_hint:
         line2 += " [↑][↓] Scroll standings "
