@@ -8,7 +8,6 @@ import constants
 from core import categorize_games, format_live_clock, game_index_label
 from .helpers import format_team_name
 
-# Compatibilidade com testes e outros imports
 _format_live_clock = format_live_clock
 _game_index_label = game_index_label
 
@@ -235,7 +234,7 @@ def _draw_standings_wide(stdscr, table_start, height, east, west, col_width, col
             pass
 
 
-STANDINGS_NARROW_ROWS = 36  # East: 2 header + 15 teams; blank; West: 2 header + 15 teams
+STANDINGS_NARROW_ROWS = 36
 
 
 def _draw_standings_narrow(stdscr, table_start, east, west, height, color_ctx, standings_scroll=0, footer_lines=1):

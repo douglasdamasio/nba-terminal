@@ -109,7 +109,6 @@ class TestParseDateString(unittest.TestCase):
         self.assertIsNone(parse_date_string(""))
         self.assertIsNone(parse_date_string("  "))
         self.assertIsNone(parse_date_string("invalid"))
-        # dateutil accepts MM/DD/YYYY (e.g. 02/13/2025) so we only assert truly invalid
         self.assertIsNone(parse_date_string("not-a-date"))
 
 

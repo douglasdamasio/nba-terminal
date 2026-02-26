@@ -41,7 +41,6 @@ def get_action(key: int, game_count: int = 0) -> Optional[str]:
         return "scroll_up"
     if key == curses.KEY_DOWN:
         return "scroll_down"
-    # Game by index: 1-9 -> 0-8, 0 -> 9, a-j -> 10-19
     if ord("1") <= key <= ord("9"):
         idx = key - ord("1")
         if 0 <= idx < game_count:

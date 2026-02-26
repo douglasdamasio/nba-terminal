@@ -109,7 +109,6 @@ def show_config_screen(stdscr, cfg):
             layout_label = config.get_text(cfg, "layout_wide")
         else:
             layout_label = config.get_text(cfg, "layout_auto")
-        # Selectable indices: 0-7 = options, 12 = back (8-11 = separator and About subsection)
         selectable_rows = [0, 1, 2, 3, 4, 5, 6, 7, 12]
         lines = [
             config.get_text(cfg, "language") + ": " + lang_label,

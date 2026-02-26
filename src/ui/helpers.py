@@ -1,7 +1,6 @@
 """UI helpers: safe_addstr, wait_key, team name formatting, loading bar, and scroll keys."""
 import curses
 
-# Keys that trigger page scroll (up/down). Use U/D so keyboards without PgUp/PgDn work.
 PAGE_SCROLL_UP_KEYS = (curses.KEY_PPAGE, ord("u"), ord("U"))
 PAGE_SCROLL_DOWN_KEYS = (curses.KEY_NPAGE, ord("d"), ord("D"))
 
@@ -37,7 +36,6 @@ def draw_loading_bar(stdscr, row, width, progress=0.0):
         if 0 <= progress <= 1:
             filled = int(bar_width * progress)
         else:
-            # Indeterminate: use progress as phase (e.g. (time * 2) % 1.0)
             phase = (progress % 1.0) if progress > 1 else (progress % 1.0)
             filled = int(bar_width * 0.3) + int((bar_width * 0.4) * phase)
             filled = min(filled, bar_width)

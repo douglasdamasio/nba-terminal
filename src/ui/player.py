@@ -73,10 +73,9 @@ def show_player_page(stdscr, player_id, player_name, tricode, cfg, color_ctx, ap
             if val is not None and str(val).strip():
                 label = config.get_text(cfg, label_key)
                 safe_addstr(stdscr, row, 0, f"  {label}: {val}", max_width=width)
-                row += 1
         row += 1
+    row += 1
 
-    # Season stats (headline from CommonPlayerInfo)
     safe_addstr(stdscr, row, 0, config.get_text(cfg, "player_season_stats"), curses.A_BOLD | curses.A_REVERSE, max_width=width)
     row += 1
     if info and any(info.get(k) is not None for k in ("PTS", "REB", "AST")):

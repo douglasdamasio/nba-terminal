@@ -443,7 +443,7 @@ def show_teams_picker(stdscr, east, west, cfg, color_ctx, api_client):
                 except curses.error:
                     pass
             else:
-                row = data  # TeamRow
+                row = data
                 if search_query:
                     line = f"  {row.tricode} - {row.name}"
                 else:

@@ -3,7 +3,6 @@ import sys
 import unittest
 from pathlib import Path
 
-# Avoid importing curses on headless CI if needed; get_action only uses ord() and curses.KEY_*
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 try:
@@ -74,7 +73,7 @@ class TestGetAction(unittest.TestCase):
         self.assertEqual(get_action(ord("1"), 5), "game:0")
         self.assertEqual(get_action(ord("5"), 5), "game:4")
         self.assertEqual(get_action(ord("9"), 9), "game:8")
-        self.assertIsNone(get_action(ord("9"), 5))  # only 5 games: index 8 out of range
+        self.assertIsNone(get_action(ord("9"), 5))
         self.assertIsNone(get_action(ord("1"), 0))
 
     def test_game_index_0_is_ninth_game(self):

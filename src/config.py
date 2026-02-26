@@ -32,7 +32,7 @@ class AppConfig(BaseModel):
     """Validated app configuration model (pydantic). Default values and types are enforced."""
 
     language: Literal["en", "pt"] = "en"
-    refresh_interval_seconds: int = Field(default=30, ge=0, le=300)  # 0 = off
+    refresh_interval_seconds: int = Field(default=30, ge=0, le=300)
     refresh_mode: Literal["fixed", "auto"] = "fixed"
     favorite_team: str = Field(default="LAL", min_length=2, max_length=5)
     last_game_date: Optional[str] = None

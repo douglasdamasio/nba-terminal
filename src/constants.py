@@ -106,28 +106,20 @@ BOX_SCORE_STAT_KEYS = [
 
 LEADER_CATEGORIES = [("TOP 3 SCORERS", "PTS"), ("TOP 3 REBOUNDS", "REB"), ("TOP 3 ASSISTS", "AST")]
 
-# Refresh interval options (seconds); 0 = off
 REFRESH_INTERVAL_CHOICES = [10, 15, 30, 60, 120, 0]
 
-# API / cache (used in api.py)
 CACHE_TTL_STANDINGS = 3600
 CACHE_TTL_GAMES = 90
 CACHE_TTL_LEAGUE_LEADERS = 3600
 CACHE_TTL_BOX_SCORE = 300
 RETRY_MAX_ATTEMPTS = 3
 RETRY_BASE_DELAY = 1
-# Minimum seconds between API requests (soft rate limiting)
 RATE_LIMIT_MIN_INTERVAL = 0.6
-# HTTP request timeout (seconds); avoids app hanging on slow/unreachable API
 REQUEST_TIMEOUT = 20
-# Max seconds to wait for initial load before showing cache/empty (app always opens)
 INITIAL_LOAD_TIMEOUT = 10
-# Max seconds to read from disk cache when API timed out (avoids hang on slow/NFS disk)
 CACHE_READ_TIMEOUT = 3
-# Max age (seconds) for using disk cache when offline (24h)
 CACHE_TTL_OFFLINE = 86400
 
-# Splash / loading messages (used in main.py)
 SPLASH_STARTING = "Starting..."
 SPLASH_LOADING_GAMES = "Loading games..."
 SPLASH_LOADING_STANDINGS = "Loading standings..."

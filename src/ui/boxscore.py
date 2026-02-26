@@ -127,10 +127,8 @@ def _draw_quarter_scores(stdscr, row, quarter_scores, cfg, away_tricode, home_tr
     return row
 
 
-# Triple-double indicator (ASCII so it works in all terminals)
 TRIPLE_DOUBLE_MARK = "[TD]"
 
-# Group box score stats for clearer layout (label, keys).
 _STAT_GROUPS = [
     ("SCORING", ["points"]),
     ("SHOOTING", ["fieldGoalsMade", "fieldGoalsAttempted", "fieldGoalsPercentage", "threePointersMade", "threePointersAttempted", "threePointersPercentage", "freeThrowsMade", "freeThrowsAttempted", "freeThrowsPercentage"]),
@@ -412,9 +410,8 @@ def show_game_stats(stdscr, game, cfg, color_ctx, api_client):
     view_mode = "both"
     player_offset = 0
     selected_player_idx = 0
-    compare_first = None  # None or (person_id, name, tricode)
+    compare_first = None
 
-    # Horizontal split: left = game stats (quarters + team stats), right = all players
     left_width = min(48, max(34, (width - 2) // 2))
     right_col = left_width + 2
     right_width = width - right_col - 1
@@ -426,18 +423,15 @@ def show_game_stats(stdscr, game, cfg, color_ctx, api_client):
             header_end_row = _draw_box_header_row(stdscr, game_data, away, home, away_name, home_name, away_tricode, home_tricode, color_ctx, h2h=h2h, cfg=cfg)
             content_start_row = header_end_row
 
-            # Left pane: quarter scores + team statistics
             row = _draw_quarter_scores(stdscr, content_start_row, quarter_scores, cfg, away_tricode, home_tricode, color_ctx, left_width, start_col=0)
             row = _draw_team_stats_table(stdscr, row, away, home, away_tricode, home_tricode, left_width, color_ctx, start_col=0)
 
-            # Vertical separator
             for r in range(content_start_row, height - 1):
                 try:
                     stdscr.addstr(r, left_width + 1, "|", curses.A_DIM)
                 except curses.error:
                     pass
 
-            # Right pane: all players list
             all_players = _build_all_players(view_mode, away, home)
             list_start_row = content_start_row + 4
             pad_height = max(1, height - list_start_row - 2)
@@ -445,7 +439,6 @@ def show_game_stats(stdscr, game, cfg, color_ctx, api_client):
                 selected_player_idx = -1
             elif selected_player_idx >= len(all_players):
                 selected_player_idx = len(all_players) - 1
-            # Ensure selection is on a player, not a separator or section label
             while 0 <= selected_player_idx < len(all_players) and all_players[selected_player_idx][0] in ("---", "STARTERS", "BENCH"):
                 selected_player_idx += 1
             if selected_player_idx >= len(all_players):

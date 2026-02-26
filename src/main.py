@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import curses
+import os
 import sys
 import threading
 import time
@@ -12,6 +13,11 @@ from types import SimpleNamespace
 from typing import Optional
 from datetime import datetime, timezone, timedelta
 from dateutil import parser
+
+if __package__ == "src":
+    _app_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    if _app_root not in sys.path:
+        sys.path.insert(0, _app_root)
 
 import typer
 
